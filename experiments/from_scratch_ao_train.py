@@ -158,6 +158,8 @@ def main():
     ap.add_argument("--projector-init-std", type=float, default=0.0)
     ap.add_argument("--freeze-projector", action="store_true",
                     help="Freeze W at its init weights (control: K-fold redundancy without learning).")
+    ap.add_argument("--entropy-penalty-lambda", type=float, default=0.0,
+                    help="If > 0, add -λ * mean_attention_entropy_over_K to the loss (encourages all K slots to be attended to).")
     ap.add_argument("--steering-coefficient", type=float, default=1.0)
     ap.add_argument("--eval-every", type=int, default=200)
     ap.add_argument("--save-every", type=int, default=2000)
@@ -264,6 +266,7 @@ def main():
         projector_init_std=args.projector_init_std,
         projector_lr=args.lr_projector,
         freeze_projector=args.freeze_projector,
+        entropy_penalty_lambda=args.entropy_penalty_lambda,
         # HF push
         hf_push_to_hub=args.push_to_hub,
         hf_private_repo=args.hf_private,

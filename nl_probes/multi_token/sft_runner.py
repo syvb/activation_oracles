@@ -64,6 +64,11 @@ class MultiTokenSftConfig(SelfInterpTrainingConfig):
     # If True, freeze the projector at its init weights (e.g. all-identity).
     # Used as a control to disentangle "K-fold redundancy" from "learned W projection."
     freeze_projector: bool = False
+    # Attention-entropy penalty: encourages downstream attention to spread
+    # uniformly over the K placeholder slots. When > 0, forces eager attention
+    # and adds `-lambda * mean_entropy_over_K_placeholders` to the loss
+    # (high entropy → uniform attention → reward).
+    entropy_penalty_lambda: float = 0.0
     # If set, save the projector state to this path at every save_step.
     projector_filename: str = "projector.pt"
 
@@ -97,6 +102,50 @@ def _gather_source_activations(batch: BatchData) -> list[torch.Tensor]:
     return sources
 
 
+def _attention_entropy_over_K(
+    attentions_tuple: tuple,
+    positions: list[list[int]],
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Compute mean entropy of attention over the K placeholder positions,
+    averaged over (layer, head, query token, batch).
+
+    `attentions_tuple` is the `outputs.attentions` tuple from a forward call
+    with `output_attentions=True` — len = num_layers, each tensor shape
+    (B, num_heads, L, L).
+
+    Query tokens considered: those AFTER the last placeholder (so the AO has
+    "seen" the K injected vectors). Returns a scalar (mean entropy in nats),
+    differentiable.
+    """
+    B = len(positions)
+    # All examples share the same K (we only support a fixed K per run).
+    K = len(positions[0])
+    L = attentions_tuple[0].shape[-1]
+    device = attentions_tuple[0].device
+
+    # Per-batch query token idx (after last placeholder) and placeholder idx.
+    # Loops over B because lengths differ across batch elements (left padding).
+    entropies = []
+    for b in range(B):
+        ph = positions[b]
+        last_ph = max(ph)
+        q_idx = list(range(last_ph + 1, L))
+        if not q_idx:
+            continue
+        q_t = torch.tensor(q_idx, device=device)
+        p_t = torch.tensor(ph, device=device)
+        for layer_attn in attentions_tuple:
+            # layer_attn: (B, H, L, L)
+            sub = layer_attn[b, :, q_t][:, :, p_t]  # (H, num_q, K)
+            sub = sub / sub.sum(dim=-1, keepdim=True).clamp(min=eps)
+            ent = -(sub * sub.clamp(min=eps).log()).sum(dim=-1)  # (H, num_q)
+            entropies.append(ent.mean())
+    if not entropies:
+        return torch.zeros((), device=device)
+    return torch.stack(entropies).mean()
+
+
 def train_features_batch_multi_token(
     cfg: MultiTokenSftConfig,
     training_batch: BatchData,
@@ -119,8 +168,18 @@ def train_features_batch_multi_token(
         "input_ids": training_batch.input_ids,
         "attention_mask": training_batch.attention_mask,
     }
+    use_entropy_penalty = cfg.entropy_penalty_lambda > 0
     with add_hook(submodule, hook_fn):
-        loss = ddp_module(**tokenized_input, labels=training_batch.labels).loss
+        outputs = ddp_module(
+            **tokenized_input,
+            labels=training_batch.labels,
+            output_attentions=use_entropy_penalty,
+        )
+    loss = outputs.loss
+    if use_entropy_penalty and outputs.attentions is not None:
+        entropy = _attention_entropy_over_K(outputs.attentions, training_batch.positions)
+        # Subtract: high entropy → low loss → reward
+        loss = loss - cfg.entropy_penalty_lambda * entropy
     return loss
 
 
@@ -244,6 +303,11 @@ def train_model_multi_token(
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
     model_kwargs = {**model_kwargs, "device_map": {"": f"cuda:{local_rank}"}}
+    if cfg.entropy_penalty_lambda > 0:
+        # output_attentions=True is incompatible with FA2/SDPA; force eager.
+        model_kwargs["attn_implementation"] = "eager"
+        if rank == 0:
+            print(f"Entropy penalty λ={cfg.entropy_penalty_lambda} active → using eager attention.")
 
     set_seed(cfg.seed)
     model = load_model(cfg.model_name, dtype, **model_kwargs)
