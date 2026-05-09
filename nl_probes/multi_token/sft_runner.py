@@ -481,12 +481,37 @@ def train_model_multi_token(
 
         if cfg.hf_push_to_hub and cfg.hf_repo_id:
             print(f"Pushing LoRA + projector to HF Hub: {cfg.hf_repo_id}")
+            mt_readme = (
+                f"---\n"
+                f"base_model: {cfg.model_name}\n"
+                f"library_name: peft\n"
+                f"---\n\n"
+                f"# Multi-token (K={cfg.k_placeholders}) single-source-K-projection AO\n\n"
+                f"LoRA adapter + linear projector W trained jointly from scratch as a "
+                f"K={cfg.k_placeholders} single-source-K-projection Activation Oracle on "
+                f"`{cfg.model_name}`.\n\n"
+                f"This checkpoint is K-specific by design: every example gets one source "
+                f"residual-stream activation projected to {cfg.k_placeholders} placeholder "
+                f"slots via the trainable W.\n\n"
+                f"## Files\n\n"
+                f"- `adapter_model.safetensors`, `adapter_config.json` — LoRA adapter\n"
+                f"- `{cfg.projector_filename}` — projector W weights + metadata. Required "
+                f"for inference.\n\n"
+                f"## Training config\n\n"
+                f"- Hook layer: {cfg.hook_onto_layer}\n"
+                f"- LoRA rank {cfg.lora_r}, alpha {cfg.lora_alpha}, dropout "
+                f"{cfg.lora_dropout}, target_modules={cfg.lora_target_modules}\n"
+                f"- Projector init: {cfg.projector_init_strategy}\n"
+                f"- LR: LoRA={cfg.lr}, projector={cfg.projector_lr}\n"
+                f"- Steering coefficient: {cfg.steering_coefficient}\n"
+            )
             push_lora_to_hf(
                 model=model,
                 tokenizer=tokenizer,
                 repo_id=cfg.hf_repo_id,
                 private=cfg.hf_private_repo,
                 commit_message=f"Multi-token K={cfg.k_placeholders} AO - {cfg.wandb_run_name} - final",
+                readme_content=mt_readme,
             )
             try:
                 from huggingface_hub import upload_file

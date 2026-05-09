@@ -62,6 +62,7 @@ def push_lora_to_hf(
     repo_id: str,
     private: bool,
     commit_message: str = "Upload LoRA adapter after training",
+    readme_content: str | None = None,
 ) -> None:
     """
     Push the trained LoRA adapter to Hugging Face Hub.
@@ -137,23 +138,26 @@ def push_lora_to_hf(
         print(f"Warning: Failed to copy config.json from original model: {e}")
         print("LoRA adapter uploaded successfully, but without original model config")
 
-    # Create and upload README with base model metadata
+    # Create and upload README with base model metadata. Callers can pass
+    # `readme_content` to override the default; otherwise we ship a minimal
+    # neutral template that doesn't claim a specific task (the original
+    # default mentioned SAE introspection, which was incorrect for any
+    # mixture that didn't include SAE data).
     try:
         print("Creating README with base model metadata...")
 
-        readme_content = f"""---
+        if readme_content is None:
+            readme_content = f"""---
 base_model: {original_model_name}
 library_name: peft
 ---
 
-# LoRA Adapter for SAE Introspection
+# LoRA Adapter for `{original_model_name}`
 
-This is a LoRA (Low-Rank Adaptation) adapter trained for SAE (Sparse Autoencoder) introspection tasks.
-
-## Base Model
-- **Base Model**: `{original_model_name}`
-- **Adapter Type**: LoRA
-- **Task**: SAE Feature Introspection
+LoRA adapter trained on top of `{original_model_name}` for activation-
+oracle / introspection-style tasks. See the training repository or the
+caller's commit message for the specific training mixture used for this
+checkpoint.
 
 ## Usage
 
@@ -161,16 +165,10 @@ This is a LoRA (Low-Rank Adaptation) adapter trained for SAE (Sparse Autoencoder
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-# Load base model and tokenizer
 base_model = AutoModelForCausalLM.from_pretrained("{original_model_name}")
 tokenizer = AutoTokenizer.from_pretrained("{original_model_name}")
-
-# Load LoRA adapter
 model = PeftModel.from_pretrained(base_model, "{repo_id}")
 ```
-
-## Training Details
-This adapter was trained using the lightweight SAE introspection training script to help the model understand and explain SAE features through activation steering.
 """
 
         # Create temporary README file
