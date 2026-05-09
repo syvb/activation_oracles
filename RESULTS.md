@@ -39,9 +39,55 @@ The cls-only LoRA + injection at layer 50% reaches IID 90.3% / OOD 64.6% (single
 
 OOD has clear headroom (~35pp away from the 100% ceiling), which is exactly where Phase 2's K=8 run is meant to be visible.
 
-## Phase 1 — Smoke test (K=8, ~5–10K examples)
+## Phase 1 — Smoke test (K=8, 16K examples, 1 epoch)
 
-(pending)
+`experiments/phase1_smoke.py --k 8 --n-train-per-ds 1000 --n-test-per-ds 100 --batch-size 8 --epochs 1`
+
+- 8 train datasets × 1000 contexts × 2 QAs = **16K train examples**
+- IID test: same 8 datasets × 100 contexts × 2 QAs = 1600 test examples
+- 200M trainable params (134M projector at d=4096, 67M residual MLP adapter)
+- LR 3e-4 cosine, AdamW, bf16 forward + fp32 trainable modules
+- 2000 optim steps at bs=8
+
+| Step | Avg eval acc |
+| ----:| -----------: |
+|    0 |    **81.8%** |
+|  200 |        57.2% |
+|  400 |        66.2% |
+|  600 |        68.9% |
+|  800 |        67.6% |
+| 1000 |        71.1% |
+| 1200 |        73.0% |
+| 1400 |        74.3% |
+| 1600 |        74.3% |
+| 1800 |        74.9% |
+| 2000 |    **75.0%** |
+
+**Final eval, per dataset (step 2000):**
+- geometry_of_truth: 99.0% (was 95.5% at step 0 — **gained 3.5pp**)
+- relations: 79.5% (was 71.0%)
+- sst2: 84.0% (was 75.5%)
+- md_gender: **51.5%** (was 94.5% — **lost 43pp**)
+- snli: 82.0% (was 82.0%)
+- ner: 82.5% (was 82.5%)
+- tense: 74.5% (was 96.5% — **lost 22pp**)
+- ag_news: 47.0% (was 57.0%)
+
+**Sanity checks against PLAN.md:**
+- ✓ Training loss decreases (from ~0.18 first half to ~0.17 second half).
+- ✓ W gradient norm is non-zero (e.g., 0.72 at step 0, settling around 0.03-0.08).
+
+**Observations:**
+- Step-0 K=8 (W₁ = I, W₂..W₈ noise std 0.02) starts at **81.8%** — 8.5pp below the K=1 baseline (90.3%). The 7 noise placeholder slots perturb the AO meaningfully even before any training.
+- Training slowly recovers (200 → 1800 steps: 57% → 75%) but plateaus well below the K=1 baseline.
+- Per-dataset trajectories diverge: simple tasks (geometry_of_truth, sst2, snli) gain or hold; multi-class-flavored ones (md_gender, tense) collapse to near-chance.
+- The drop pattern looks like overfitting under a too-large LR with a too-small dataset relative to the 200M trainable params.
+
+**Plan for Phase 2:**
+1. Lower LR (1e-4 vs 3e-4) to reduce the initial-step thrashing.
+2. ~30K train examples (per the plan's main run sizing).
+3. Same identity-plus-noise init.
+4. Eval at step 0 + every 500 steps so we can read off the curve.
 
 ## Phase 2 — Main run (K=8, 30K+ examples)
 
