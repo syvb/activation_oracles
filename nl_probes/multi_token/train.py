@@ -122,14 +122,15 @@ def train(
 
     if cfg.train_ao_lora:
         # LoRA fallback: only LoRA adapter params are trainable; everything
-        # else (base model) stays frozen.
+        # else (base model) stays frozen. Keep `model.eval()` so dropout in
+        # the rest of the AO stays off — `requires_grad` is what controls
+        # parameter updates, not train/eval mode.
         for name, p in model.named_parameters():
             if "lora_" not in name:
                 p.requires_grad = False
-        model.train()
     else:
-        model.eval()
         freeze_base_model(model)
+    model.eval()
 
     # Make embedding outputs require grad so backward reaches the hook
     model.enable_input_require_grads()
