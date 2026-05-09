@@ -41,6 +41,12 @@ class MultiTokenPastLensDatasetConfig(BaseDatasetConfig):
     is the number of past/future tokens to predict. The activation is a single
     position chosen randomly within the valid range; we don't sweep activation
     spans (unlike the original PastLensDatasetConfig).
+
+    `pretrain_only` skips the chat-data half of the mix. lmsys-chat-1m is a
+    gated dataset and not all HF tokens have access; pretrain-only avoids that
+    blocker. The original past-lens AO mixed in chat data for diversity, but
+    the single-source-K format is mostly testing the AO's ability to consume a
+    K-projected source — chat vs pretrain distribution matters less.
     """
 
     k_placeholders: int = 8
@@ -48,6 +54,7 @@ class MultiTokenPastLensDatasetConfig(BaseDatasetConfig):
     max_k_tokens: int = 20
     max_length: int = 512
     directions: list[str] = field(default_factory=lambda: ["past", "future"])
+    pretrain_only: bool = True
 
 
 class MultiTokenPastLensDatasetLoader(ActDatasetLoader):
@@ -73,7 +80,10 @@ class MultiTokenPastLensDatasetLoader(ActDatasetLoader):
 
     def create_dataset(self) -> None:
         tokenizer = load_tokenizer(self.dataset_config.model_name)
-        dataset = hf_mixed_dataset_to_generator(tokenizer)
+        if self.dataset_params.pretrain_only:
+            dataset = _hf_pretrain_only_generator(tokenizer)
+        else:
+            dataset = hf_mixed_dataset_to_generator(tokenizer)
 
         training_data = collect_multi_token_past_lens_acts(
             dataset_config=self.dataset_config,
@@ -85,6 +95,25 @@ class MultiTokenPastLensDatasetLoader(ActDatasetLoader):
         )
 
         self.save_dataset(training_data, "train")
+
+
+def _hf_pretrain_only_generator(
+    tokenizer: AutoTokenizer,
+    pretrain_dataset: str = "HuggingFaceFW/fineweb",
+    split: str = "train",
+):
+    """Stream pretrain text only (no lmsys-chat). One sample per yield, prefixed
+    with the model's BOS token."""
+    pretrain_ds = iter(load_dataset(pretrain_dataset, split=split, streaming=True))
+    eos_token = tokenizer.eos_token
+    bos_token = tokenizer.bos_token if tokenizer.bos_token else eos_token
+
+    def gen():
+        while True:
+            sample = bos_token + next(pretrain_ds)["text"]
+            yield sample
+
+    return gen()
 
 
 def collect_multi_token_past_lens_acts(

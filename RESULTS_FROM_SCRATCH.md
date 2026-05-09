@@ -34,6 +34,20 @@ appends a section. The previous round's findings are in `RESULTS.md`.
 - Minor edit to `nl_probes/multi_token/data_builder.py` to support lazy mode
   without a base model loaded.
 
+## Eval scope clarification (2026-05-09)
+
+`paper_evals.sh` has 5 evals, but only 3 have Qwen3-8B target LoRAs that exist:
+- **Classification** — any model ✓
+- **Taboo** — Qwen3-8B branch uses `adamkarvonen/Qwen3-8B-taboo-{word}_50_mix` ✓
+- **PersonaQA** — Qwen3-8B branch uses `adamkarvonen/Qwen3-8B-personaqa_shuffled_3_epochs` ✓
+- **Gender** — `bcywinski/gemma-2-9b-it-user-{male,female}` only (Gemma) ✗
+- **SSC** — `bcywinski/llama-3.3-70B-Instruct-ssc-base64` only (Llama) ✗
+
+So the "+3pp avg across the 5 tasks" bar from PLAN_FROM_SCRATCH simplifies to
+"+3pp avg across the 3 Qwen3-comparable tasks": classification, taboo,
+personaqa. Compared to the released `adamkarvonen/checkpoints_cls_only_addition_Qwen3-8B`
+running at K=1 on the same 3 evals.
+
 ## Phase 0 — Local CPU smoke (no GPU)
 
 `PLAN_FROM_SCRATCH_AO.md` step 5 says:
