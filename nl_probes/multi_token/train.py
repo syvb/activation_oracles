@@ -120,10 +120,11 @@ def train(
     # Make embedding outputs require grad so backward reaches the hook
     model.enable_input_require_grads()
 
-    # 2. Build trainable modules
+    # 2. Build trainable modules. Keep them in fp32 (small modules, no benefit
+    # from bf16 weights; the hook casts outputs as needed).
     d_model = model.config.hidden_size
-    projector = MultiTokenProjector(d_model, cfg.k_placeholders, init_std=cfg.projector_init_std).to(device=device, dtype=dtype)
-    adapter = InjectionAdapter(d_model, hidden_mult=cfg.adapter_hidden_mult).to(device=device, dtype=dtype) if cfg.use_adapter else None
+    projector = MultiTokenProjector(d_model, cfg.k_placeholders, init_std=cfg.projector_init_std).to(device=device, dtype=torch.float32)
+    adapter = InjectionAdapter(d_model, hidden_mult=cfg.adapter_hidden_mult).to(device=device, dtype=torch.float32) if cfg.use_adapter else None
 
     trainable_params = list(projector.parameters())
     if adapter is not None:
