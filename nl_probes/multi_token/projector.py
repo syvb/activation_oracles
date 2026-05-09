@@ -15,7 +15,18 @@ import torch.nn.functional as F
 
 
 class MultiTokenProjector(nn.Module):
-    def __init__(self, d_model: int, k: int, init_std: float = 0.02):
+    def __init__(
+        self,
+        d_model: int,
+        k: int,
+        init_std: float = 0.02,
+        init_strategy: str = "identity_plus_noise",
+    ):
+        """init_strategy:
+          - "identity_plus_noise": W_1 = I, W_2..W_K ~ N(0, init_std). The plan's default.
+          - "all_identity": W_k = I for all k (every slot starts as identity).
+          - "all_identity_plus_noise": W_k = I + N(0, init_std) for all k.
+        """
         super().__init__()
         self.d_model = d_model
         self.k = k
@@ -23,9 +34,19 @@ class MultiTokenProjector(nn.Module):
         # First d rows correspond to W_1, etc.
         self.linear = nn.Linear(d_model, k * d_model, bias=False)
         with torch.no_grad():
-            self.linear.weight.normal_(mean=0.0, std=init_std)
-            # Set W_1 = I so K=1 reproduces the baseline exactly.
-            self.linear.weight[:d_model] = torch.eye(d_model)
+            if init_strategy == "identity_plus_noise":
+                self.linear.weight.normal_(mean=0.0, std=init_std)
+                self.linear.weight[:d_model] = torch.eye(d_model)
+            elif init_strategy == "all_identity":
+                self.linear.weight.zero_()
+                for slot in range(k):
+                    self.linear.weight[slot * d_model:(slot + 1) * d_model] = torch.eye(d_model)
+            elif init_strategy == "all_identity_plus_noise":
+                self.linear.weight.normal_(mean=0.0, std=init_std)
+                for slot in range(k):
+                    self.linear.weight[slot * d_model:(slot + 1) * d_model] += torch.eye(d_model)
+            else:
+                raise ValueError(f"Unknown init_strategy: {init_strategy}")
 
     def forward(self, a_BD: torch.Tensor) -> torch.Tensor:
         """a_BD: (B, d_model) -> (B, K, d_model)."""

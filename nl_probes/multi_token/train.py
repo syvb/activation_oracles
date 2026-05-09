@@ -51,6 +51,7 @@ class MultiTokenTrainConfig:
     use_adapter: bool = True
     adapter_hidden_mult: int = 2
     projector_init_std: float = 0.02
+    projector_init_strategy: str = "identity_plus_noise"
 
     train_batch_size: int = 8
     eval_batch_size: int = 32
@@ -123,7 +124,12 @@ def train(
     # 2. Build trainable modules. Keep them in fp32 (small modules, no benefit
     # from bf16 weights; the hook casts outputs as needed).
     d_model = model.config.hidden_size
-    projector = MultiTokenProjector(d_model, cfg.k_placeholders, init_std=cfg.projector_init_std).to(device=device, dtype=torch.float32)
+    projector = MultiTokenProjector(
+        d_model,
+        cfg.k_placeholders,
+        init_std=cfg.projector_init_std,
+        init_strategy=cfg.projector_init_strategy,
+    ).to(device=device, dtype=torch.float32)
     adapter = InjectionAdapter(d_model, hidden_mult=cfg.adapter_hidden_mult).to(device=device, dtype=torch.float32) if cfg.use_adapter else None
 
     trainable_params = list(projector.parameters())
