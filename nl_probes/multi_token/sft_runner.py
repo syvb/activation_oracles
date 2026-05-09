@@ -289,17 +289,27 @@ def train_model_multi_token(
 
     submodule = get_hf_submodule(model, cfg.hook_onto_layer, use_lora=True)
 
-    wrapped = _AOWithProjector(model, projector).to(device)
     torch.cuda.set_device(local_rank)
-    # find_unused_parameters=True is required because the projector's params
-    # are only touched inside a forward hook on a submodule of `self.ao`, not
-    # via `_AOWithProjector.forward()` itself. Without it, DDP throws
-    # "Expected to have finished reduction in the prior iteration" because
-    # its used-param tracker can't see the hook-driven path. The perf cost is
-    # small relative to the LoRA backward.
-    ddp_module: nn.Module = torch.nn.parallel.DistributedDataParallel(
-        wrapped, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True
-    )
+    if cfg.freeze_projector:
+        # When W is frozen, the projector contributes no gradients — wrapping
+        # it inside DDP would trip "Encountered gradient which is undefined"
+        # because DDP buckets requires_grad=False params and then can't
+        # allreduce a missing grad. Wrap only the AO model; projector is
+        # called from the hook closure as a frozen reference.
+        ddp_module: nn.Module = torch.nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False
+        )
+    else:
+        # find_unused_parameters=True is required because the projector's params
+        # are only touched inside a forward hook on a submodule of `self.ao`, not
+        # via `_AOWithProjector.forward()` itself. Without it, DDP throws
+        # "Expected to have finished reduction in the prior iteration" because
+        # its used-param tracker can't see the hook-driven path. The perf cost is
+        # small relative to the LoRA backward.
+        wrapped = _AOWithProjector(model, projector).to(device)
+        ddp_module = torch.nn.parallel.DistributedDataParallel(
+            wrapped, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True
+        )
 
     ddp_module.train()
 
