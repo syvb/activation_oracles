@@ -79,8 +79,59 @@ Pending on H100:
 - Phase 2 main: ~65M tokens, full mixture, 1 epoch.
 - Phase 3 eval: paper_evals.sh patched for K=8 single-source inference.
 
-## Phase 1 — H100 smoke test (pending)
+## Phase 1 — H100 smoke test (passed)
 
-## Phase 2 — Main run (pending)
+`torchrun --nproc_per_node=1 experiments/from_scratch_ao_train.py --debug --run-name phase1_smoke --train-batch-size 8`
+
+Debug-sized: 200 cls/ds × 8 datasets + 1000 latentqa + 1000 past-lens =
+~4.7K examples, 584 optim steps, 256K training tokens. Took ~3 minutes
+on a single H100 SXM 80GB at $2.99/hr.
+
+| Step | LatentQA | PastLens | cls (avg) |
+| ---: | -------: | -------: | --------: |
+|    0 |     4.35 |     9.66 |    ~10.05 |
+|  150 |     1.88 |     4.23 |     ~0.20 |
+|  350 |     1.78 |     4.05 |     ~0.20 |
+|  584 | **1.74** | **3.93** |  **~0.18** |
+
+Held-out CE drops on every task — training is working end-to-end. Train
+log shows `w_grad_norm` consistently in 0.1-0.4 range across all 73
+optim-step log points, so the projector is being updated (not stuck at
+identity). 584 steps is far too few to evaluate accuracy gains, but
+the smoke confirms:
+- Data builders produce valid TrainingDataPoints with K=8 placeholders
+- The DDP+PEFT+projector wrapper trains cleanly (after disabling
+  gradient_checkpointing — the ckpt+hook combo trips a known torch DDP bug)
+- HF token, lmsys access, and dataset caches all work
+- `find_unused_parameters=True` is needed because the projector is
+  reached via a forward hook, not via the wrapped module's `forward()`
+
+Issues fixed during smoke:
+1. `lmsys/lmsys-chat-1m` is gated → user granted access; no code change
+   needed.
+2. DDP "Expected to have finished reduction" error: preflight was running
+   forward through the DDP wrapper instead of the inner model.
+3. DDP "gradient which is undefined, but still allreduced" error:
+   gradient_checkpointing + the in-place hook modification confused DDP's
+   used-parameter tracking. Disabled grad ckpt.
+
+## Phase 2 — Main run (in progress)
+
+`torchrun --nproc_per_node=1 experiments/from_scratch_ao_train.py
+--run-name main_K8_full --train-batch-size 16 --push-to-hub
+--hf-repo-id syvb/from-scratch-K8-AO-Qwen3-8B`
+
+Sized to roughly match the published 65M-token AO budget at K=8 single-
+source-projection format:
+- 6000 train examples × 8 classification datasets = 48K cls (×2 QAs/sample = 96K rows)
+- 80K LatentQA examples
+- 50K past-lens examples
+Total: ~178K examples ≈ ~64M training tokens after the length-percentile trim.
+
+Expected runtime: ~30 min dataset construction (past-lens streams from
+fineweb + lmsys) + ~1.5 hr training + ~5 min HF push.
+
+Bar to clear: average +3pp on classification + taboo + personaqa vs the
+released `adamkarvonen/checkpoints_cls_only_addition_Qwen3-8B` at K=1.
 
 ## Phase 3 — Paper evals (pending)
