@@ -111,17 +111,24 @@ SAE), add a NEW entry that uses single-source-K-projection format. Concretely:
   - For past-lens and SAE you'll need to write equivalents — straightforward
     given the existing single- and multi-token loaders.
 
-Sweep K_target over a fixed set inside one training run: pick K from
-`{2, 4, 8}` per example (uniformly random in batch). This gives the AO
-exposure to multiple Ks so eval at any one K isn't an OOD shape. If you only
-want to support a single K at inference, drop the sweep and pick K=4 (it was
-the sweet spot in eval-only experiments).
+**Pick a single fixed K_target and train only for that.** K=4 was the
+sweet spot in our eval-only experiments and is the recommended starting
+point. Don't sweep K within a run and don't try to preserve K=1
+single-token compatibility — the resulting AO is allowed to be K-specific.
+Spending data budget on the existing K=1 / K=window formats just dilutes the
+signal for the format we actually care about, and the existing K=1 AO
+already exists if anyone needs that mode.
 
-Mixture ratios: roughly 50/50 between the existing data formats and the new
-single-source-K-projection format. The K=1 single-token and K=window
-multi-token paths already exist in the AO's "vocabulary"; they should be
-preserved so the trained AO doesn't lose its ability to do the existing
-formats.
+Mixture: 100% single-source-K-projection at K=K_target, drawn from all the
+existing tasks (classification, LatentQA, past lens, SAE) using their
+existing context-extraction logic but funneled through the new single-source
+data builders. This means the AO sees the *same range of tasks and contexts*
+as the original AO training, just always rendered as one source activation
+projected to K placeholders.
+
+If you want to verify the trained AO didn't catastrophically lose
+generality, you can hold out a small fraction of training data and report
+held-out loss per task; no need to test at K=1.
 
 ## Hyperparameters
 
@@ -130,7 +137,14 @@ produce a working AO. Specifically:
 
 - model_name: `Qwen/Qwen3-8B`
 - hook_onto_layer: 1
-- layer_percents: 25, 50, 75 (multi-layer training, like the released AO)
+- **layer_percents: [50] — single layer only.** Don't train multi-layer
+  here. The original AO uses [25, 50, 75] but that triples the data and
+  introduces a second source of variability (which target-model layer is
+  the activation drawn from) that's orthogonal to the single-source-K
+  question being studied. Keep the experiment focused: every training
+  example draws its source activation from layer 50% of Qwen3-8B, just
+  like the eval-only experiments that produced the +OOD finding. Add other
+  layers in a follow-up only if K=K_target at layer 50% beats baseline.
 - LoRA rank 64, alpha 128, dropout 0.05, target=`all-linear`
 - LR for LoRA: `1e-5`
 - LR for W (projector): `1e-4` to `3e-4` — separate param group
@@ -158,15 +172,17 @@ Use the paper's eval suite: `bash experiments/paper_evals.sh`:
 - SSC open-ended (`experiments/ssc_open_ended_eval.py`)
 - PersonaQA open-ended (`experiments/personaqa_open_ended_eval.py`)
 
-For each, evaluate at:
-1. K=1 (single-token, baseline behavior — must survive the new training)
-2. K=4 and K=8 (single-source-K-projection, the new behavior)
+For each, evaluate at K=K_target (the chosen K — this AO is K-specific).
+**Compare against the released cls-only AO running at K=1** as the
+baseline; that's the apples-to-apples comparison since the released AO is
+the one this experiment is trying to beat.
 
-Bar to clear: K=4 or K=8 beats K=1 by ≥3pp on average across the five tasks
-(matches the original plan's threshold). Stretch goal: meaningful gains on
-the open-ended secret-keeping evals (Taboo / Gender / SSC), since those are
-the hardest tasks where the released AO has the most headroom and where the
-K-fold redundancy effect we found earlier might shine.
+Bar to clear: the new K=K_target AO beats the released-K=1 AO by ≥3pp on
+average across the five tasks (matches the original plan's threshold).
+Stretch goal: meaningful gains on the open-ended secret-keeping evals
+(Taboo / Gender / SSC), since those are the hardest tasks where the
+released AO has the most headroom and where the K-fold redundancy effect we
+found earlier might shine.
 
 Don't only measure averages; per-task variance is high. Report all five
 tasks with confidence intervals; plot K vs accuracy per task.
@@ -207,9 +223,10 @@ tasks with confidence intervals; plot K vs accuracy per task.
    chase IID gains; they aren't there. Aim for OOD and the open-ended
    secret-keeping evals.
 
-7. **The K=1 mode must keep working** — most users of the AO will use
-   K=1. If the from-scratch AO regresses on K=1 evals, something has gone
-   wrong with the mixture balance.
+7. **K=1 functionality is explicitly *not* a goal here** — this AO is
+   K-specific by design. Don't spend data budget keeping K=1 alive.
+   The released cls-only AO continues to exist for K=1 use cases; the new
+   AO trades K=1 support for stronger K=K_target performance.
 
 8. **Track ||W_k - I||_F per slot during training.** If all K slots stay
    near identity, the AO is ignoring the K-decomposition and you're just
@@ -231,18 +248,21 @@ tasks with confidence intervals; plot K vs accuracy per task.
 ## Compute budget
 
 The paper's published cost: 10 H100h for the full Qwen3-8B AO training on
-65M tokens, no W projector. Adding the new single-source-K data path:
+65M tokens at three layers, no W projector. With this plan:
 
-- Roughly doubles the dataset (existing + new variant per task).
-- W is small (~134M params at K=8 — comparable to a LoRA at rank 64 for
-  Qwen3-8B). Forward + backward through W is negligible.
-- Estimate: 15–20 H100h per from-scratch run.
+- Single layer (layer 50% only) cuts the per-step token count by ~3× vs the
+  paper's three-layer setup.
+- Single K_target, no K=1 / K=window-multi support — no data multiplication
+  for legacy formats.
+- W is small (~134M params at K=8, ~67M at K=4 — comparable to a LoRA at
+  rank 64 for Qwen3-8B). Forward + backward through W is negligible.
+- Estimate: 5–8 H100h per from-scratch run.
 
-Plan for at least 2 runs (likely 3 with debugging overhead): 40–60 H100h.
+Plan for at least 2 runs (likely 3 with debugging overhead): 15–25 H100h.
 
 Use 1 H100 80GB Spot via RunPod (existing infrastructure); set up via the
 flow recorded in `STATUS.md`. Project has no GCP quota for H100, so
-RunPod is the path. Budget: ~$3/hr × 60h = ~$180.
+RunPod is the path. Budget: ~$3/hr × 25h = ~$75.
 
 ## Risks and decision points
 
@@ -250,9 +270,6 @@ RunPod is the path. Budget: ~$3/hr × 60h = ~$180.
   matches the K=1 mode): the linear-W formulation is fundamentally
   insufficient.** Either pivot to Q-Former (the plan's next-experiment
   hint) or accept the from-scratch result as a negative.
-- **If the K=1 mode regresses noticeably (>2pp on any task): the mixture
-  is too biased toward the new format.** Rebalance towards the existing
-  mixture and re-run.
 - **If OOD-only generalization improves (matching what the eval-only
   experiment found) but no IID gains:** that's a real result. The free
   +4-5pp OOD-3 from the previous experiment came from the redundancy
