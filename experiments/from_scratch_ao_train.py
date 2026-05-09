@@ -244,7 +244,11 @@ def main():
         activation_collection_batch_size=per_rank_batch * 4,
         eval_steps=args.eval_every,
         eval_on_start=True,
-        gradient_checkpointing=True,
+        # gradient_checkpointing + DDP + the hook-driven projector trips a
+        # torch bug ("Encountered gradient which is undefined, but still
+        # allreduced by DDP reducer"). Qwen3-8B + LoRA r=64 + projector at
+        # bs=8 fits comfortably in H100 80GB without checkpointing.
+        gradient_checkpointing=False,
         gradient_accumulation_steps=1,
         num_epochs=args.num_epochs,
         lr=args.lr_lora,
