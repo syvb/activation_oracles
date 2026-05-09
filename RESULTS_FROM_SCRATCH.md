@@ -529,6 +529,100 @@ if anyone continues this line.)
 | trained-W (Phase 3)| `syvb/from-scratch-K8-AO-Qwen3-8B`                            |
 | frozen-W (Phase 4) | `syvb/from-scratch-K8-frozen-W-AO-Qwen3-8B`                   |
 | entropy-pen (Phase 6)| `syvb/from-scratch-K8-entropy-penalty-AO-Qwen3-8B`          |
+| slot-dropout (Phase 7)| `syvb/from-scratch-K8-slot-dropout-AO-Qwen3-8B`            |
+
+## Phase 7 — Slot-dropout: drop a Bernoulli subset of K injections per step
+
+After the entropy penalty produced uniform attention without performance gain,
+tried a different mechanism: at training time, randomly drop each slot's
+injection with probability p=0.5. The masked slot's residual stays at its
+natural pre-injection value (no W·source addition). At eval time, no
+dropout. Hypothesis: the AO must learn to be robust to losing any subset
+→ should spread useful info across all K. Pushed to
+`syvb/from-scratch-K8-slot-dropout-AO-Qwen3-8B`.
+
+Slot dropout is FA2-compatible (no eager attention needed), so this run
+trained at the original ~3.7 it/s, ~1.5h vs the entropy-penalty's ~3h.
+
+### Attention spreading: between trained-W and frozen-W
+
+| Variant            | Mean attention entropy | Gap to ln(K)=2.079 |
+| ------------------ | ---------------------: | -----------------: |
+| trained-W          |                  1.236 |               0.84 |
+| frozen-W           |                  1.812 |               0.27 |
+| entropy-penalty    |                  2.005 |               0.07 |
+| **slot-dropout**   |              **1.676** |               0.40 |
+
+![entropy per layer, four runs](experiments/attention_results/entropy_per_layer.png)
+
+![per-K mean attention, four runs](experiments/attention_results/per_K_mean_attention.png)
+
+Slot-dropout's per-K bars are LESS concentrated than trained-W (which
+heavily favored slots 0, 1, 5) but still have some structure: slots 0/1/2
+get the bulk of attention, slots 3 still gets dropped to ~0.03, and
+slots 4/5/6/7 are around uniform.
+
+### Eval results
+
+| Eval                  | K=1 baseline | trained-W | frozen-W | entropy-pen | **slot-dropout** |
+| --------------------- | -----------: | --------: | -------: | ----------: | ---------------: |
+| Classification IID(7) |        89.1% |     90.6% |    89.1% |       89.5% |        **90.9%** |
+| Classification OOD-3  |        66.0% | **88.7%** |    83.1% |       85.9% |            86.9% |
+| Classification OOD-all(13) |   65.0% |     70.2% |    69.8% |       70.6% |        **70.4%** |
+| Taboo(20 avg)         |         4.9% |      5.8% | **7.2%** |        6.8% |             5.8% |
+| PersonaQA (overall)   |         8.8% |      6.5% |  **7.5%** |        6.7% |             6.0% |
+| **3-eval AVG**        |        29.1% |     29.9% |  **30.4%**|        30.3% |            29.8% |
+
+Slot-dropout vs trained-W: **−0.0pp** (cls slightly better, taboo same,
+personaqa slightly worse). vs frozen-W: **−0.6pp**. vs K=1 baseline:
+**+0.7pp** (still below the +3pp bar).
+
+### Cross-variant summary
+
+Four ways to set up the K=8 single-source AO, all training-budget-matched:
+
+|                | attn entropy | 3-eval avg | classifies cleanly | secret-keeping |
+| -------------- | -----------: | ---------: | -----------------: | -------------: |
+| trained-W      |        1.236 |      29.9% |   ✓ best OOD-3 (88.7%) | weakest        |
+| frozen-W       |        1.812 |  **30.4%** | strong OOD-all     | **best**       |
+| entropy-pen    |    2.005 (≈uniform) | 30.3% | strong OOD-3        | middle         |
+| slot-dropout   |        1.676 |      29.8% | ties trained-W on cls | weakest      |
+
+All four are within a 0.6pp band on the 3-eval average. The "use 3 of 8"
+attention pattern of trained-W is not a problem to be solved — every
+attempt to spread attention more uniformly trades cls-OOD-3 specificity
+for marginal gains elsewhere. The K=8 single-source format simply does
+not carry K=8 worth of independent information; **slot-dropout, like the
+entropy penalty, can force a more uniform attention shape but cannot
+turn that into accuracy because the single-source bottleneck is real**.
+
+### What would work instead?
+
+The single-source bottleneck is structural: K linear projections of one
+d-dim vector live in a d-dim manifold, no matter how big K is. To make
+"use all K slots" meaningful, the K slots must carry genuinely
+independent information. Three concrete directions for follow-ups:
+
+1. **Multi-source K** — sample K different positions and/or layers of
+   the target prompt as the K sources. Each slot now carries different
+   information by construction. (The released AO's "K=window-of-tokens"
+   format already does this for K=window. Single-source-K-projection is
+   the variant we tested; multi-source-K is the one most likely to give
+   a real per-slot story.)
+
+2. **Q-Former / cross-attention from learned queries** — replace the
+   linear W with K learnable query vectors that cross-attend to the full
+   target prompt's residual stream. Each query learns to extract a
+   different aspect. PLAN_FROM_SCRATCH flags this as the next-experiment
+   architecture.
+
+3. **K=4 instead of K=8** with the same single-source setup — the
+   trained-W result said the AO only finds use for ~3 slots. K=4 would
+   give similar accuracy at half the cost and a cleaner attention story.
+
+For this experiment series specifically: stop chasing "use all 8 slots"
+within the single-source format. The format itself is the bottleneck;
+the regularizers are not.
 
 ## Trained checkpoint
 

@@ -37,6 +37,7 @@ def main():
         "trained-W": ATTN_DIR / "attention_trained_W.json",
         "frozen-W": ATTN_DIR / "attention_frozen_W.json",
         "entropy-penalty": ATTN_DIR / "attention_entropy_penalty.json",
+        "slot-dropout": ATTN_DIR / "attention_slot_dropout.json",
     }
     available = {k: p for k, p in paths.items() if p.exists()}
     if "trained-W" not in available or "frozen-W" not in available:
@@ -80,7 +81,7 @@ def main():
 
     # --- Plot: entropy vs layer for all available runs ---
     fig, ax = plt.subplots(figsize=(10, 5))
-    markers = {"trained-W": "o", "frozen-W": "s", "entropy-penalty": "^"}
+    markers = {"trained-W": "o", "frozen-W": "s", "entropy-penalty": "^", "slot-dropout": "D"}
     for name, arr in per_layer_by_run.items():
         ax.plot(range(n_layers), arr, label=name, marker=markers.get(name, "o"))
     ax.axhline(ln_K, color="grey", linestyle="--", label=f"uniform = ln(K) = {ln_K:.3f}")
@@ -131,7 +132,7 @@ def main():
     x = np.arange(K)
     n_runs = len(per_K_by_run)
     width = 0.8 / n_runs
-    colors = {"trained-W": "C0", "frozen-W": "C1", "entropy-penalty": "C2"}
+    colors = {"trained-W": "C0", "frozen-W": "C1", "entropy-penalty": "C2", "slot-dropout": "C3"}
     for i, (name, arr) in enumerate(per_K_by_run.items()):
         offset = (i - (n_runs - 1) / 2) * width
         ax.bar(x + offset, arr, width, label=name, color=colors.get(name))
