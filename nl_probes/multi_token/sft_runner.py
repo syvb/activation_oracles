@@ -61,6 +61,9 @@ class MultiTokenSftConfig(SelfInterpTrainingConfig):
     projector_init_strategy: str = "all_identity"
     projector_init_std: float = 0.0
     projector_lr: float = 3e-4
+    # If True, freeze the projector at its init weights (e.g. all-identity).
+    # Used as a control to disentangle "K-fold redundancy" from "learned W projection."
+    freeze_projector: bool = False
     # If set, save the projector state to this path at every save_step.
     projector_filename: str = "projector.pt"
 
@@ -308,19 +311,32 @@ def train_model_multi_token(
 
     # Two parameter groups: LoRA params on cfg.lr, projector params on cfg.projector_lr.
     lora_params = [p for n, p in ddp_module.named_parameters() if "lora_" in n and p.requires_grad]
-    projector_params = list(projector.parameters())
+    if cfg.freeze_projector:
+        # Control variant: keep W locked at its init (e.g. all_identity). The
+        # injection still happens but W never updates — isolates whether the
+        # AO's gain comes from learned distinct projections or from K-fold
+        # input redundancy alone.
+        for p in projector.parameters():
+            p.requires_grad = False
+        projector_params: list = []
+    else:
+        projector_params = list(projector.parameters())
+
     n_lora = sum(p.numel() for p in lora_params)
     n_proj = sum(p.numel() for p in projector_params)
     if rank == 0:
         print(f"Trainable LoRA params: {n_lora:,}")
-        print(f"Trainable projector params: {n_proj:,}")
+        print(f"Trainable projector params: {n_proj:,}  (frozen={cfg.freeze_projector})")
 
-    optimizer = torch.optim.AdamW(
-        [
-            {"params": lora_params, "lr": cfg.lr, "name": "lora"},
-            {"params": projector_params, "lr": cfg.projector_lr, "name": "projector"},
-        ]
-    )
+    if cfg.freeze_projector:
+        optimizer = torch.optim.AdamW(lora_params, lr=cfg.lr)
+    else:
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": lora_params, "lr": cfg.lr, "name": "lora"},
+                {"params": projector_params, "lr": cfg.projector_lr, "name": "projector"},
+            ]
+        )
 
     global_step_size = cfg.train_batch_size * world_size
     effective_steps = (len(training_data) // global_step_size) * global_step_size
@@ -406,9 +422,10 @@ def train_model_multi_token(
                     log_dict = {
                         "train/loss": accumulated_loss,
                         "train/learning_rate_lora": optimizer.param_groups[0]["lr"],
-                        "train/learning_rate_projector": optimizer.param_groups[1]["lr"],
                         "train/w_grad_norm": w_grad_norm,
                     }
+                    if not cfg.freeze_projector and len(optimizer.param_groups) > 1:
+                        log_dict["train/learning_rate_projector"] = optimizer.param_groups[1]["lr"]
                     log_dict.update(_w_per_slot_diff_from_identity(projector))
                     wandb.log(log_dict, step=global_step)
                     if verbose and global_step % 50 == 0:
