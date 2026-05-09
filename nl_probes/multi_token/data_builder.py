@@ -44,9 +44,17 @@ def build_multi_token_classification_data(
     assert tokenizer.padding_side == "left", "Padding side must be left"
     K = k_placeholders
     out: list[TrainingDataPoint] = []
-    submodule = get_hf_submodule(model, act_layer)
-    submodules = {act_layer: submodule}
-    device = model.device if save_acts else torch.device("cpu")
+    if save_acts:
+        assert model is not None, "save_acts=True requires a loaded base model"
+        submodule = get_hf_submodule(model, act_layer)
+        submodules = {act_layer: submodule}
+        device = model.device
+    else:
+        # Lazy mode: only the tokenizer is needed; activations get materialized
+        # later by `materialize_missing_steering_vectors` in the training loop.
+        submodule = None
+        submodules = None
+        device = torch.device("cpu")
 
     for i in tqdm(range(0, len(datapoints), batch_size), desc=f"Building K={K} cls data"):
         chunk = datapoints[i : i + batch_size]

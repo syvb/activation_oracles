@@ -1,0 +1,72 @@
+# Results — from-scratch K=8 single-source-K-projection AO
+
+This file accumulates results for `PLAN_FROM_SCRATCH_AO.md`. Each phase
+appends a section. The previous round's findings are in `RESULTS.md`.
+
+## Setup decisions (locked 2026-05-09)
+
+- **K_target = 8** (per user direction; PLAN_FROM_SCRATCH recommended K=4 as the
+  sweet spot from RESULTS.md eval-only data, but the user wants K=8 to match
+  the original PLAN.md target.)
+- **Task mix:** classification + LatentQA + multi-token past-lens. SAE dropped
+  to keep the new data-builder surface small (SAE adds dependence on the SAE
+  encoder/decoder loading + max-acts data, marginal gain on the open-ended
+  evals which is where we're chasing the headline number).
+- **InjectionAdapter:** off — keep the architecture as close to vanilla AO as
+  possible. Our only delta from a vanilla AO is the W projector.
+- **HF Hub:** push final LoRA + projector to a private repo on the user's
+  account.
+- **Layer:** 50% only, single layer (no [25, 50, 75] sweep).
+- **Init:** `all_identity` (W_k = I for all K slots).
+
+## Code changes vs main
+
+- New `nl_probes/multi_token/past_lens_data_builder.py` — single-source past-
+  lens dataset.
+- New `nl_probes/multi_token/loaders.py` — `MultiToken{Classification,LatentQA}DatasetLoader`
+  that fit the `ActDatasetLoader` infrastructure (DDP-aware caching, hash-based
+  filenames, train/test splits).
+- New `nl_probes/multi_token/sft_runner.py` — `train_model_multi_token` that
+  jointly trains LoRA + W with two AdamW param groups, uses the multi-token
+  hook, and saves both LoRA and projector at checkpoint time. Held-out loss
+  per task is tracked instead of generation-based eval during training.
+- New `experiments/from_scratch_ao_train.py` — top-level launch script.
+- Minor edit to `nl_probes/multi_token/data_builder.py` to support lazy mode
+  without a base model loaded.
+
+## Phase 0 — Local CPU smoke (no GPU)
+
+`PLAN_FROM_SCRATCH_AO.md` step 5 says:
+
+> Smoke test on a single H100 with 5K examples and 100 optim steps; verify
+> train loss decreases and W gradient norms are non-zero (same Phase 1 smoke
+> checks as the previous plan).
+
+Before paying for an H100 we did a CPU pre-flight:
+
+- ✓ MultiTokenProjector init: `all_identity` correctly puts every slot at the
+  identity, output of W·x is exactly K copies of x.
+- ✓ MultiTokenProjector init: `identity_plus_noise` with std=0 puts slot 0 at I
+  and slots 1..K-1 at zero (matches RESULTS.md reproducer).
+- ✓ Backward through MultiTokenProjector populates `weight.grad` (norm ~18 on a
+  random forward, finite and non-zero).
+- ✓ `get_multi_token_steering_hook` produces `normalize(W_k·source) * ||orig_k||
+  + orig_k` at each placeholder position, within bf16 quantization noise of the
+  expected fp32 result (rel error 0.0014 on a 8-d toy).
+- ✓ `build_multi_token_classification_data` runs in lazy mode (no model
+  loaded), producing TrainingDataPoints with K=8 placeholder positions and K
+  identical context_positions for the source.
+- ✓ DatasetLoaderConfig hashes cleanly distinguish K=4 vs K=8 cache files —
+  no collision between K-specific runs.
+
+Pending on H100:
+- Phase 1 smoke: 5K examples, 100 optim steps. Confirm train loss decreases
+  and W grad norms are non-zero on real Qwen3-8B.
+- Phase 2 main: ~65M tokens, full mixture, 1 epoch.
+- Phase 3 eval: paper_evals.sh patched for K=8 single-source inference.
+
+## Phase 1 — H100 smoke test (pending)
+
+## Phase 2 — Main run (pending)
+
+## Phase 3 — Paper evals (pending)
