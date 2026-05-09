@@ -178,7 +178,11 @@ def run_verbalizer_multi_token(
     'segment' (single_source_K) variant — no per-token / full-seq variants.
     """
     dtype = torch.bfloat16
-    injection_submodule = get_hf_submodule(model, config.injection_layer, use_lora=True)
+    # use_lora=False because we used model.add_adapter() — not
+    # PeftModel.from_pretrained — so model.base_model isn't a thing. The
+    # `model.model.layers[layer]` path still resolves the layer 1 submodule
+    # correctly; the LoRA is applied on its inner linear modules.
+    injection_submodule = get_hf_submodule(model, config.injection_layer, use_lora=False)
 
     pbar = tqdm(total=len(verbalizer_prompt_infos), desc="Verbalizer K-eval", position=1)
     results: list[VerbalizerResults] = []
