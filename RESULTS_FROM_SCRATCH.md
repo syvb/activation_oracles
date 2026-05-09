@@ -287,6 +287,83 @@ existing K-window format) trained from scratch with a learnable W, vs
 the released window-mode AO baseline, to see if W helps in the format
 that's already strong on open-ended tasks. That's a different experiment.
 
+## Phase 4 — Frozen-W control (does the trained W actually help, or is it just K-fold redundancy?)
+
+Same training pipeline, same data, same 13K steps — but with `W = I` frozen
+the entire run. Only the LoRA updates. The hypothesis to test: if the AO
+"just" learns to use K-fold redundancy and W's learned projection
+contributes nothing useful, then frozen-W ≈ trained-W on the evals.
+
+Trained checkpoint: `syvb/from-scratch-K8-frozen-W-AO-Qwen3-8B` (HF Hub, private).
+
+### Held-out training-task losses (final)
+
+| Task                        | Trained-W | Frozen-W | Δ (frozen − trained) |
+| --------------------------- | --------: | -------: | -------------------: |
+| LatentQA(control)           |     1.350 |    1.382 |              +0.032 |
+| LatentQA(stim_compl)        |     1.433 |    1.496 |              +0.063 |
+| LatentQA(stim)              |     1.380 |    1.463 |              +0.084 |
+| past_lens                   |     2.370 |    2.462 |              +0.093 |
+| cls/snli                    |     0.079 |    0.111 |              +0.032 |
+| cls/ner                     |     0.107 |    0.140 |              +0.032 |
+| cls/lang_id                 |     0.069 |    0.121 |              +0.052 |
+| cls/sst2                    |     0.054 |    0.088 |              +0.034 |
+| cls/relations               |     0.065 |    0.096 |              +0.031 |
+
+Trained W lowers held-out CE on every task by ~0.03–0.10 nats. The W
+projector IS doing real work in the training loss.
+
+### Eval results: frozen-W vs K=1 baseline vs trained-W
+
+| Eval                     | K=1 baseline | K=8 frozen-W | K=8 trained-W |
+| ------------------------ | -----------: | -----------: | ------------: |
+| Classification IID(7)    |        89.1% |        89.1% |     **90.6%** |
+| Classification OOD-3     |        66.0% |        83.1% |     **88.7%** |
+| Classification OOD-all(13) |      65.0% |        69.8% |     **70.2%** |
+| Taboo(20 avg)            |         4.9% |     **7.2%** |          5.8% |
+| PersonaQA (overall)      |         8.8% |     **7.5%** |          6.5% |
+| **3-eval AVG**           |        29.1% |    **30.4%** |         29.9% |
+
+### Headline: trained-W vs frozen-W head-to-head
+
+| Eval                  | frozen-W  | trained-W |     Δ trained − frozen |
+| --------------------- | --------: | --------: | ---------------------: |
+| Classification(20 avg)|     76.5% |     77.3% |             +0.8pp |
+| — IID(7)              |     89.1% |     90.6% |             +1.5pp |
+| — OOD-3               |     83.1% |     88.7% |             +5.7pp |
+| — OOD-all(13)         |     69.8% |     70.2% |             +0.4pp |
+| Taboo(20 avg)         |      7.2% |      5.8% |             −1.3pp |
+| PersonaQA (overall)   |      7.5% |      6.5% |             −1.0pp |
+| **3-eval AVG**        | **30.4%** |     29.9% |             **−0.5pp** |
+
+**Frozen-W wins the 3-eval average by +0.5pp.** Trained W contributes a
+meaningful classification-OOD-3 boost (+5.7pp) but at the cost of open-
+ended performance (taboo −1.3pp, personaqa −1.0pp). Net result: the
+K-fold input redundancy effect alone is nearly as good as joint W
+training, and slightly better on average.
+
+### Interpretation
+
+This answers the question PLAN_FROM_SCRATCH.md flagged as a decision point:
+
+> If the AO ignores the K-decomposition (W stays at identity, accuracy
+> matches the K=1 mode): the linear-W formulation is fundamentally
+> insufficient.
+
+The AO does *not* ignore the K decomposition — held-out CE consistently
+lower with trained W. But the directions in which W learns to project
+help classification more than they help open-ended persona reconstruction.
+Without W training, the AO learns to extract per-task signal from K-fold
+redundant input alone, and that's enough for both cls and open-ended.
+
+The frozen-W result is the cleaner story: **K-fold input redundancy +
+LoRA fine-tuning beats single-source K=1 by ~+1.3pp on average across
+the 3 evals.** This is similar in size to what RESULTS.md found in the
+eval-only setup (+1.6pp on the broader classification eval). The
+from-scratch training extended the cls-OOD-3 lift dramatically (frozen-W
+gets +17.1pp, vs +4.6pp eval-only), but the open-ended gain was always
+modest.
+
 ## Trained checkpoint
 
 - Repo: `syvb/from-scratch-K8-AO-Qwen3-8B` (HF Hub, private)
