@@ -33,13 +33,18 @@ def main():
     if not ATTN_DIR.exists():
         raise SystemExit(f"{ATTN_DIR} not found — run attention_analysis.py first")
 
-    trained_path = ATTN_DIR / "attention_trained_W.json"
-    frozen_path = ATTN_DIR / "attention_frozen_W.json"
-    if not trained_path.exists() or not frozen_path.exists():
-        raise SystemExit("expected attention_trained_W.json and attention_frozen_W.json in ATTN_DIR")
+    paths = {
+        "trained-W": ATTN_DIR / "attention_trained_W.json",
+        "frozen-W": ATTN_DIR / "attention_frozen_W.json",
+        "entropy-penalty": ATTN_DIR / "attention_entropy_penalty.json",
+    }
+    available = {k: p for k, p in paths.items() if p.exists()}
+    if "trained-W" not in available or "frozen-W" not in available:
+        raise SystemExit("Need at least trained-W and frozen-W JSONs")
 
-    trained = load(trained_path)
-    frozen = load(frozen_path)
+    runs = {k: load(p) for k, p in available.items()}
+    trained = runs["trained-W"]
+    frozen = runs["frozen-W"]
 
     K = trained["K"]
     ln_K = math.log(K)
@@ -49,31 +54,39 @@ def main():
     print(f"K={K}, ln(K)={ln_K:.3f}  (uniform over K = {ln_K:.3f}, single slot = 0)")
     print()
 
-    # --- Aggregate: mean entropy per layer across examples ---
-    trained_per_layer = np.zeros(n_layers)
-    frozen_per_layer = np.zeros(n_layers)
-    for ex_t, ex_f in zip(trained["results"], frozen["results"]):
-        trained_per_layer += np.array(ex_t["mean_entropy_per_layer"])
-        frozen_per_layer += np.array(ex_f["mean_entropy_per_layer"])
-    trained_per_layer /= len(trained["results"])
-    frozen_per_layer /= len(frozen["results"])
+    # --- Aggregate: mean entropy per layer across examples, per run ---
+    per_layer_by_run = {}
+    for name, run in runs.items():
+        per_layer = np.zeros(n_layers)
+        for ex in run["results"]:
+            per_layer += np.array(ex["mean_entropy_per_layer"])
+        per_layer /= len(run["results"])
+        per_layer_by_run[name] = per_layer
 
-    print(f"{'Layer':>5} {'trained-W H':>12} {'frozen-W H':>12} {'Δ (T−F)':>10}")
+    # Print summary table
+    header = f"{'Layer':>5}"
+    for name in per_layer_by_run:
+        header += f"  {name:>12}"
+    print(header)
     for L_idx in range(n_layers):
-        print(f"{L_idx:>5} {trained_per_layer[L_idx]:>12.4f} {frozen_per_layer[L_idx]:>12.4f} {trained_per_layer[L_idx]-frozen_per_layer[L_idx]:>+10.4f}")
+        row = f"{L_idx:>5}"
+        for name, arr in per_layer_by_run.items():
+            row += f"  {arr[L_idx]:>12.4f}"
+        print(row)
 
     print()
-    print(f"trained-W mean entropy across all layers: {trained_per_layer.mean():.4f}  (gap to ln(K) = {ln_K - trained_per_layer.mean():.4f})")
-    print(f"frozen-W  mean entropy across all layers: {frozen_per_layer.mean():.4f}  (gap to ln(K) = {ln_K - frozen_per_layer.mean():.4f})")
+    for name, arr in per_layer_by_run.items():
+        print(f"{name:>16} mean entropy: {arr.mean():.4f}  (gap to ln(K) = {ln_K - arr.mean():.4f})")
 
-    # --- Plot: entropy vs layer ---
+    # --- Plot: entropy vs layer for all available runs ---
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(range(n_layers), trained_per_layer, label="trained-W", marker="o")
-    ax.plot(range(n_layers), frozen_per_layer, label="frozen-W (W=I)", marker="s")
+    markers = {"trained-W": "o", "frozen-W": "s", "entropy-penalty": "^"}
+    for name, arr in per_layer_by_run.items():
+        ax.plot(range(n_layers), arr, label=name, marker=markers.get(name, "o"))
     ax.axhline(ln_K, color="grey", linestyle="--", label=f"uniform = ln(K) = {ln_K:.3f}")
     ax.set_xlabel("AO layer")
     ax.set_ylabel("Mean attention entropy over K=8 placeholders\n(over heads, post-placeholder query tokens, examples)")
-    ax.set_title("Attention to K=8 placeholders is closer to uniform when W is frozen at identity")
+    ax.set_title("Attention entropy over K=8 placeholders, by AO layer")
     ax.legend()
     ax.grid(True, linestyle=":", alpha=0.5)
     fig.tight_layout()
@@ -102,28 +115,30 @@ def main():
     print(f"Saved {out_png}")
     plt.close(fig)
 
-    # --- Per-K mean attention bar plot, averaged over layers/heads ---
-    trained_per_K = np.zeros(K)
-    frozen_per_K = np.zeros(K)
-    n_layer_total = 0
-    for ex_t, ex_f in zip(trained["results"], frozen["results"]):
-        a_t = np.array(ex_t["mean_attn_per_K_per_layer"])  # (num_layers, K)
-        a_f = np.array(ex_f["mean_attn_per_K_per_layer"])
-        trained_per_K += a_t.sum(axis=0)
-        frozen_per_K += a_f.sum(axis=0)
-        n_layer_total += a_t.shape[0]
-    trained_per_K /= n_layer_total
-    frozen_per_K /= n_layer_total
+    # --- Per-K mean attention bar plot, averaged over layers/heads, per run ---
+    per_K_by_run = {}
+    for name, run in runs.items():
+        per_K = np.zeros(K)
+        n_layer_total = 0
+        for ex in run["results"]:
+            a = np.array(ex["mean_attn_per_K_per_layer"])  # (num_layers, K)
+            per_K += a.sum(axis=0)
+            n_layer_total += a.shape[0]
+        per_K /= n_layer_total
+        per_K_by_run[name] = per_K
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(11, 5))
     x = np.arange(K)
-    width = 0.4
-    ax.bar(x - width/2, trained_per_K, width, label="trained-W")
-    ax.bar(x + width/2, frozen_per_K, width, label="frozen-W")
+    n_runs = len(per_K_by_run)
+    width = 0.8 / n_runs
+    colors = {"trained-W": "C0", "frozen-W": "C1", "entropy-penalty": "C2"}
+    for i, (name, arr) in enumerate(per_K_by_run.items()):
+        offset = (i - (n_runs - 1) / 2) * width
+        ax.bar(x + offset, arr, width, label=name, color=colors.get(name))
     ax.axhline(1.0/K, color="grey", linestyle="--", label=f"uniform = 1/K = {1/K:.3f}")
     ax.set_xlabel("placeholder slot k")
     ax.set_ylabel("mean renormalized attention\n(over layers, heads, query tokens, examples)")
-    ax.set_title("Mean attention to each placeholder slot")
+    ax.set_title("Mean attention to each placeholder slot, all runs")
     ax.set_xticks(x)
     ax.legend()
     fig.tight_layout()

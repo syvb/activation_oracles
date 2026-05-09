@@ -443,6 +443,93 @@ treating it as redundancy?" answer the experiment can produce: with
 trained W, yes; with frozen W, no — and the eval-result tradeoff is now
 mechanistically grounded.
 
+## Phase 6 — Entropy penalty: force the AO to use all K=8 slots
+
+After Phase 5 showed trained-W concentrated attention on only 3 of 8
+slots, we tried adding a regularizer to force uniform attention across
+all 8. Concretely: with `entropy_penalty_lambda=0.1`, the loss becomes
+
+  `loss = CE_loss − 0.1 · mean_entropy_over_K_placeholders`
+
+where the entropy is computed on the differentiable softmax weights from
+`output_attentions=True` (forces eager attention). High entropy is
+rewarded. Trained on the same 13K-step recipe; pushed to
+`syvb/from-scratch-K8-entropy-penalty-AO-Qwen3-8B`.
+
+### Did the penalty work mechanically? Yes — overshot.
+
+| Variant            | Mean attention entropy (avg over layers) | Gap to ln(K)=2.079 |
+| ------------------ | ---------------------------------------: | -----------------: |
+| trained-W (Phase 3)|                                    1.236 |               0.84 |
+| frozen-W (Phase 4) |                                    1.812 |               0.27 |
+| **entropy-penalty**|                                **2.005** |          **0.07** |
+
+The entropy-penalty AO has near-uniform attention across all 8 slots.
+It actually has *higher* entropy than frozen-W — the penalty forced the
+AO well past "redundant" into "fully uniform across all 8 slots, by every
+attention head, in every layer ≥ 0".
+
+![entropy per layer, three runs](experiments/attention_results/entropy_per_layer.png)
+
+![per-K mean attention, three runs](experiments/attention_results/per_K_mean_attention.png)
+
+In the per-K bar plot, the entropy-penalty bars (green) sit basically
+on top of the 1/K = 0.125 uniform line for every slot. Trained-W's
+"use 3 of 8" pattern is gone.
+
+### Did it help downstream eval performance? Marginally.
+
+| Eval                      | K=1 baseline | trained-W | frozen-W | entropy-pen |
+| ------------------------- | -----------: | --------: | -------: | ----------: |
+| Classification IID(7)     |        89.1% |     90.6% |    89.1% |       89.5% |
+| Classification OOD-3      |        66.0% |     88.7% |    83.1% |       85.9% |
+| Classification OOD-all(13)|        65.0% |     70.2% |    69.8% |       70.6% |
+| Taboo(20 avg)             |         4.9% |      5.8% |     7.2% |        6.8% |
+| PersonaQA (overall)       |         8.8% |      6.5% |     7.5% |        6.7% |
+| **3-eval AVG**            |        29.1% |     29.9% |    30.4% |   **30.3%** |
+
+| Comparison                          |    Δ avg | Notes |
+| ----------------------------------- | -------: | ----- |
+| entropy-pen vs K=1 baseline         |   +1.2pp | Below the +3pp plan bar |
+| entropy-pen vs trained-W (Phase 3)  |   +0.4pp | Cls flat, taboo +1.0pp, personaqa +0.2pp |
+| entropy-pen vs frozen-W (Phase 4)   |   −0.1pp | Basically tied |
+
+Forcing uniform attention does NOT meaningfully outperform either the
+"use 3 of 8 slots" pattern (trained-W) or the "treat all 8 as redundant"
+pattern (frozen-W). The 3-eval average is essentially the same as
+frozen-W (30.3% vs 30.4%).
+
+### Interpretation
+
+This is a meaningful negative result. Three regimes for the K=8
+decomposition all land within ±0.5pp of each other on the 3-eval average:
+1. **Use 3/8 slots heavily** (trained-W, no penalty): +0.8pp on cls, −1.3pp
+   on taboo, −1.0pp on personaqa.
+2. **Treat all 8 slots as redundant** (frozen-W, W=I locked): +3.1pp on
+   cls, +2.2pp on taboo, −1.3pp on personaqa.
+3. **Forced uniform attention over all 8** (entropy penalty): +4.0pp on
+   cls, +1.9pp on taboo, −2.2pp on personaqa.
+
+The K=8 decomposition is not carrying enough additional information to
+make "use all 8 slots" more accurate than "use a few". The lift over the
+K=1 baseline is the K-fold redundancy effect (which worked even at frozen
+W=I), not learned-distinct-projections-being-attended-to-distinctly.
+
+This also suggests **K=8 is too large** for this single-source-projection
+format. The trained-W's "use 3 of 8" pattern is its way of saying "I only
+have ~3 useful linear projections of one source — the other 5 are noise
+or near-duplicates." A K=4 setup would probably give similar accuracy
+with less compute and a cleaner attention story. (Recommended follow-up
+if anyone continues this line.)
+
+### Trained checkpoints
+
+| Run                | HF Hub repo (private)                                         |
+| ------------------ | ------------------------------------------------------------- |
+| trained-W (Phase 3)| `syvb/from-scratch-K8-AO-Qwen3-8B`                            |
+| frozen-W (Phase 4) | `syvb/from-scratch-K8-frozen-W-AO-Qwen3-8B`                   |
+| entropy-pen (Phase 6)| `syvb/from-scratch-K8-entropy-penalty-AO-Qwen3-8B`          |
+
 ## Trained checkpoint
 
 - Repo: `syvb/from-scratch-K8-AO-Qwen3-8B` (HF Hub, private)
