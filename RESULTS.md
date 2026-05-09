@@ -264,6 +264,20 @@ OOD collapsed by 12.5pp after just 500 steps. Killed the run after step 500 — 
 
 **The W-projection-and-train hypothesis from the plan does not survive contact with the data.** What does work is using K identical copies of the activation at step 0, with the projector held fixed at identity.
 
+### Cross-task training: same result on LatentQA
+
+To rule out "the AO is at ceiling on classification training data," I also trained W with all_identity init on **LatentQA** training data (20K examples — open-ended QA over varied personas where the AO is *not* near 100% loss). Same K=4, frozen LoRA, no adapter, LR 3e-5. Eval on the held-out 20-dataset classification set with `status.py`'s OOD = {language_identification, singular_plural} aggregate.
+
+| Step | IID(8) | OOD(2) | Avg(10) |
+| ---: | -----: | -----: | ------: |
+|    0 |  87.1% |  71.4% |  74.7%  |
+|  500 |  82.2% |  64.2% |  71.2%  |
+| 1000 |  80.5% |  61.8% |  70.3%  |
+
+Same monotonic degradation as the classification W-only run. Even with training data the AO is not at ceiling on, training W away from identity destroys the all_identity-step-0 OOD redundancy effect. Killed at step 1000.
+
+**Conclusion across both training-data sources:** the K=4 all_identity step-0 state is a brittle optimum. Any movement of W away from `(I, I, I, I)` — induced by classification training, by LatentQA training, or by adding std-0.02 noise at init — collapses the OOD gain. Training the AO LoRA alongside hits the same wall (the K=8 LoRA-fallback run plateaus near baseline; K=1 LoRA control reaches similar numbers without W in the picture).
+
 ### Final summary table
 
 Best K=8 + 3pp threshold from PLAN.md: K=8 needs to beat K=1 by 3pp on the held-out classification eval.
