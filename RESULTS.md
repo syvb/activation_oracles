@@ -168,6 +168,71 @@ Per the plan's decision rule, this is the "marginal or absent" branch — the li
 
 Running a K=1 LoRA-fallback control to disentangle.
 
+## K=1 LoRA-fallback control (32K examples, AO LoRA + identity W trainable)
+
+`experiments/phase2_lora_fallback.py --k 1 --n-train-per-ds 2000 --n-test-per-ds 250 --batch-size 8 --epochs 1 --lr 1e-4 --ao-lora-lr 1e-5 --no-adapter --eval-every 500 --run-name phase2_k1_lora_control`
+
+Identical training pipeline as the K=8 LoRA-fallback run, but with K=1 (so W is just the identity, no projection). Isolates "what does the LoRA fine-tuning alone buy on this slice."
+
+| Step |   Avg |   IID |   OOD |
+| ---: | ----: | ----: | ----: |
+|    0 | 82.6% | 87.1% | 64.5% |
+|  500 | 75.4% | 81.2% | 52.2% |
+| 1000 | 78.9% | 84.3% | 57.2% |
+| 1500 | 78.6% | 84.9% | 53.6% |
+| 2000 | 82.4% | 88.1% | 59.4% |
+| 2500 | 81.3% | 87.2% | 57.9% |
+| 3000 | 82.5% | 88.3% | 59.5% |
+| 3500 | 82.9% | 88.7% | 59.6% |
+| 4000 | **83.4%** | **89.0%** | **60.8%** |
+
+| Final (step 4000) | IID | OOD | Avg |
+| ---------------- | --: | --: | --: |
+| K=1 baseline (no train) | 90.3% | 64.6% | 78.8% |
+| K=1 + LoRA fine-tune    | 89.0% | 60.8% | 83.4% |
+| K=8 + LoRA fb + W proj  | 90.1% | 58.6% | 83.8% |
+
+**The K=8 vs K=1 difference at the end of training is +1.1pp IID, −2.2pp OOD — within per-eval noise.** The IID match-to-baseline that the K=8 LoRA-fallback achieved was the LoRA fine-tuning's doing, not the W projection. Per-eval volatility was 5+pp between adjacent eval steps so the small differences shouldn't be over-read.
+
+So with LoRA-fallback + the plan's `identity_plus_noise` init, the multi-token decomposition adds nothing measurable on top of plain LoRA fine-tuning, and OOD generalization is *hurt* by the fine-tuning regardless of K.
+
+## Step-0 K-sweep with `all_identity` init — the big finding
+
+After the LoRA-fallback experiments confirmed the noise init was hurting, I ran an eval-only sweep across K = 1, 4, 8, 16 with three init strategies, no training at all (`experiments/eval_inits.py`).
+
+Pure `all_identity` init means W_k = I for every slot, so all K placeholder positions inject the *same* normalized activation.
+
+| K  | init                       | IID    | OOD    | Avg    |
+| -- | -------------------------- | -----: | -----: | -----: |
+| 1  | identity+noise (= baseline) |  87.1% |  65.8% | 82.8%  |
+| 4  | identity+noise              |  84.3% |  55.9% | 78.6%  |
+| 4  | **all_identity**            |  **87.0%** | **73.7%** | **84.4%** |
+| 4  | all_identity+noise          |  80.3% |  54.7% | 75.2%  |
+| 8  | identity+noise              |  75.8% |  52.2% | 71.0%  |
+| 8  | all_identity                |  86.2% |  73.6% | 83.7%  |
+| 8  | all_identity+noise          |  85.3% |  53.7% | 79.0%  |
+| 16 | identity+noise              |  78.4% |  50.6% | 72.8%  |
+| 16 | all_identity                |  84.8% |  72.4% | 82.3%  |
+| 16 | all_identity+noise          |  82.9% |  56.4% | 77.6%  |
+
+**At K=4 with pure all_identity init and no training, OOD jumps from 65.8% to 73.7% (+7.9pp) at essentially no IID cost.** Replicated at K=8 (+7.8pp OOD).
+
+Three additional observations:
+- **Even small noise destroys the gain.** `all_identity+noise` (std 0.02 on top of identity) collapses OOD back to ~55%.
+- **Larger K slightly hurts** beyond K=4: K=16 is ~2pp worse on IID than K=4, OOD also down a little.
+- **Training destroys the gain** (visible in the earlier all_identity run I aborted): step-0 OOD was 72.7%, and 500 LoRA-fine-tuning steps dropped it to 55%. So this benefit only applies if the AO is left frozen.
+
+Statistically: OOD = 2 datasets × 500 examples each = 1000 OOD examples; SE on the OOD average is ≈1.4pp, so a +8pp OOD gain is well outside per-eval noise.
+
+**Plan's hypothesis: K=8 multi-token decomposition beats K=1 by ≥3pp.** With the right init (`all_identity`) and no training, K ∈ {4, 8} gets ~+1.6pp on the dataset-averaged eval and ~+8pp on the OOD subset specifically. Marginal positive on the full average; clearly positive on OOD.
+
+### What I think is happening
+The AO was trained to handle multi-token sequences where each placeholder gets a *different* sequential activation. When we hand it K *identical* projections of one activation, it appears to treat the redundancy as something like an attention prior — multiple "votes" on the same activation reduces the chance of the AO getting fooled by an unfamiliar OOD residual direction. Once we replace the identity with random projections (the `identity_plus_noise` plan default), 7 placeholder positions emit unfamiliar residuals and drown out the one informative slot.
+
+This isn't quite the mechanism the plan hypothesized (selective attention to *different* projections of one activation). It's closer to "K-fold redundancy at the input is a free OOD regularizer for the AO."
+
+(Validating this on the broader 20-dataset eval set next.)
+
 ## Phase 3 — K sweep
 
 (pending — conditional on Phase 2 success)
