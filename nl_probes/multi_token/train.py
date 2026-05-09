@@ -154,6 +154,11 @@ def train(
     if adapter is not None:
         adapter.train()
 
+    # Step-0 eval: confirms the K=8 starting state is close to the K=1 baseline
+    # (W_1 = I, W_2..W_K small noise). Useful sanity check before training.
+    if eval_datasets:
+        _run_eval(cfg, projector, adapter, model, tokenizer, submodule, device, dtype, eval_datasets, 0, log, log_path)
+
     for epoch in range(cfg.num_epochs):
         random.shuffle(training_data)
         pbar = tqdm(range(0, len(training_data), cfg.train_batch_size), desc=f"epoch {epoch+1}")
