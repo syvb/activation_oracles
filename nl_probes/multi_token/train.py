@@ -52,6 +52,10 @@ class MultiTokenTrainConfig:
     adapter_hidden_mult: int = 2
     projector_init_std: float = 0.02
     projector_init_strategy: str = "identity_plus_noise"
+    # LoRA fallback (per PLAN.md): instead of an injection-layer adapter,
+    # let the AO LoRA itself continue training together with W.
+    train_ao_lora: bool = False
+    ao_lora_lr: float = 1e-5
 
     train_batch_size: int = 8
     eval_batch_size: int = 32
@@ -111,12 +115,21 @@ def train(
     set_seed(cfg.seed)
     os.makedirs(cfg.save_dir, exist_ok=True)
 
-    # 1. Load frozen Qwen3-8B + frozen AO LoRA
+    # 1. Load Qwen3-8B + AO LoRA
     model = load_model(cfg.model_name, dtype)
-    model = PeftModel.from_pretrained(model, cfg.base_lora_path, is_trainable=False)
-    model.eval()
-    freeze_base_model(model)
+    model = PeftModel.from_pretrained(model, cfg.base_lora_path, is_trainable=cfg.train_ao_lora)
     submodule = get_hf_submodule(model, cfg.hook_layer, use_lora=True)
+
+    if cfg.train_ao_lora:
+        # LoRA fallback: only LoRA adapter params are trainable; everything
+        # else (base model) stays frozen.
+        for name, p in model.named_parameters():
+            if "lora_" not in name:
+                p.requires_grad = False
+        model.train()
+    else:
+        model.eval()
+        freeze_base_model(model)
 
     # Make embedding outputs require grad so backward reaches the hook
     model.enable_input_require_grads()
@@ -136,10 +149,22 @@ def train(
     if adapter is not None:
         trainable_params += list(adapter.parameters())
 
-    n_trainable = sum(p.numel() for p in trainable_params)
-    print(f"Trainable params: {n_trainable:,}")
+    # If LoRA is being trained, add LoRA params with their own LR group.
+    if cfg.train_ao_lora:
+        lora_params = [p for n, p in model.named_parameters() if "lora_" in n and p.requires_grad]
+        n_lora = sum(p.numel() for p in lora_params)
+        print(f"Trainable LoRA params: {n_lora:,}")
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": trainable_params, "lr": cfg.lr},
+                {"params": lora_params, "lr": cfg.ao_lora_lr},
+            ]
+        )
+    else:
+        optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr)
 
-    optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr)
+    n_trainable = sum(p.numel() for p in trainable_params)
+    print(f"Trainable W+adapter params: {n_trainable:,}")
 
     global_step_size = cfg.train_batch_size
     effective_steps = (len(training_data) // global_step_size) * global_step_size
@@ -196,9 +221,13 @@ def train(
                 # Compute W-only gradient norm before stepping
                 w_gn = projector.linear.weight.grad.detach().norm().item() if projector.linear.weight.grad is not None else 0.0
 
-                lr_now = cosine_warmup_lr(optim_step, warmup_steps, total_steps, cfg.lr)
+                # Cosine schedule scales each param group's base LR.
+                lr_factor = cosine_warmup_lr(optim_step, warmup_steps, total_steps, 1.0)
                 for pg in optimizer.param_groups:
-                    pg["lr"] = lr_now
+                    base_lr = pg.get("base_lr", pg["lr"])
+                    pg["base_lr"] = base_lr
+                    pg["lr"] = base_lr * lr_factor
+                lr_now = optimizer.param_groups[0]["lr"]
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
