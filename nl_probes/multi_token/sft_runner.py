@@ -193,7 +193,6 @@ def _w_per_slot_diff_from_identity(projector: MultiTokenProjector) -> dict[str, 
 def oom_preflight_check_multi_token(
     cfg: MultiTokenSftConfig,
     training_data: list[TrainingDataPoint],
-    ddp_module: nn.Module,
     inner_model: nn.Module,
     projector: MultiTokenProjector,
     submodule: nn.Module,
@@ -201,16 +200,21 @@ def oom_preflight_check_multi_token(
     device: torch.device,
     dtype: torch.dtype,
 ) -> None:
+    """Mirror sft.py's preflight: bypass DDP, run forward+backward on the inner
+    model so memory peaks are observed without DDP's grad-sync orchestration.
+    """
     longest_prompt = max(training_data, key=lambda x: len(x.input_ids))
     long_prompts = [longest_prompt] * cfg.train_batch_size
     long_prompts = materialize_missing_steering_vectors(long_prompts, tokenizer, inner_model)
     largest_possible_batch = construct_batch(long_prompts, tokenizer, device)
 
-    dummy_optimizer = torch.optim.AdamW(ddp_module.parameters(), lr=0.0)
+    dummy_optimizer = torch.optim.AdamW(
+        list(inner_model.parameters()) + list(projector.parameters()), lr=0.0
+    )
 
     for _ in tqdm(range(3), desc="OOM preflight check (multi-token)"):
         loss = train_features_batch_multi_token(
-            cfg, largest_possible_batch, ddp_module, projector, submodule, device, dtype
+            cfg, largest_possible_batch, inner_model, projector, submodule, device, dtype
         )
         loss.backward()
         dummy_optimizer.step()
@@ -284,14 +288,20 @@ def train_model_multi_token(
 
     wrapped = _AOWithProjector(model, projector).to(device)
     torch.cuda.set_device(local_rank)
+    # find_unused_parameters=True is required because the projector's params
+    # are only touched inside a forward hook on a submodule of `self.ao`, not
+    # via `_AOWithProjector.forward()` itself. Without it, DDP throws
+    # "Expected to have finished reduction in the prior iteration" because
+    # its used-param tracker can't see the hook-driven path. The perf cost is
+    # small relative to the LoRA backward.
     ddp_module: nn.Module = torch.nn.parallel.DistributedDataParallel(
-        wrapped, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False
+        wrapped, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True
     )
 
     ddp_module.train()
 
     oom_preflight_check_multi_token(
-        cfg, training_data, ddp_module, model, projector, submodule, tokenizer, device, dtype
+        cfg, training_data, model, projector, submodule, tokenizer, device, dtype
     )
 
     set_seed(cfg.seed)
