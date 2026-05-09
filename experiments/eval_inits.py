@@ -144,8 +144,10 @@ def main():
     print("\n=== Results ===\n")
     print(f"{'K':>3} {'init':25} {'IID%':>6} {'OOD%':>6} {'avg%':>6}")
 
-    IID = ['geometry_of_truth','relations','sst2','md_gender','snli','ner','tense']
-    OOD = ['ag_news','language_identification','singular_plural']
+    # Match the IID/OOD split used by the training runs (ag_news is in the
+    # SFT train mixture so we count it as IID for apples-to-apples).
+    IID = ['geometry_of_truth','relations','sst2','md_gender','snli','ner','tense','ag_news']
+    OOD = ['language_identification','singular_plural']
 
     all_results = {}
     for k in args.ks:
