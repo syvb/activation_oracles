@@ -42,11 +42,10 @@ class MultiTokenPastLensDatasetConfig(BaseDatasetConfig):
     position chosen randomly within the valid range; we don't sweep activation
     spans (unlike the original PastLensDatasetConfig).
 
-    `pretrain_only` skips the chat-data half of the mix. lmsys-chat-1m is a
-    gated dataset and not all HF tokens have access; pretrain-only avoids that
-    blocker. The original past-lens AO mixed in chat data for diversity, but
-    the single-source-K format is mostly testing the AO's ability to consume a
-    K-projected source — chat vs pretrain distribution matters less.
+    `pretrain_only` skips the chat-data half of the mix. lmsys-chat-1m is
+    gated; if the running HF token doesn't have access, set pretrain_only=True
+    to fall back to fineweb only. Default is False (matches the original AO
+    training mixture's 50/50 fineweb+lmsys recipe).
     """
 
     k_placeholders: int = 8
@@ -54,7 +53,7 @@ class MultiTokenPastLensDatasetConfig(BaseDatasetConfig):
     max_k_tokens: int = 20
     max_length: int = 512
     directions: list[str] = field(default_factory=lambda: ["past", "future"])
-    pretrain_only: bool = True
+    pretrain_only: bool = False
 
 
 class MultiTokenPastLensDatasetLoader(ActDatasetLoader):
