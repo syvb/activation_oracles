@@ -69,6 +69,11 @@ class MultiTokenSftConfig(SelfInterpTrainingConfig):
     # and adds `-lambda * mean_entropy_over_K_placeholders` to the loss
     # (high entropy → uniform attention → reward).
     entropy_penalty_lambda: float = 0.0
+    # Slot dropout: train-time per-(batch, slot) Bernoulli probability of
+    # *dropping* a slot's injection. Forces the AO to be robust to losing
+    # any subset → encourages spreading useful info across all K slots.
+    # 0.0 disables. Eval and held-out loss always run with no dropout.
+    slot_dropout_p: float = 0.0
     # If set, save the projector state to this path at every save_step.
     projector_filename: str = "projector.pt"
 
@@ -163,6 +168,7 @@ def train_features_batch_multi_token(
         positions=training_batch.positions,
         steering_coefficient=cfg.steering_coefficient,
         device=device,
+        slot_dropout_p=cfg.slot_dropout_p,  # eval path passes its own (0.0)
     )
     tokenized_input = {
         "input_ids": training_batch.input_ids,

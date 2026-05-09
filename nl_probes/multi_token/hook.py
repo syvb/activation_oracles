@@ -25,7 +25,14 @@ def get_multi_token_steering_hook(
     positions: list[list[int]],              # len B, each list has K positions
     steering_coefficient: float,
     device: torch.device,
+    slot_dropout_p: float = 0.0,             # train-time only: prob of dropping a slot
 ) -> Callable:
+    """If `slot_dropout_p > 0`, on each forward call we sample a Bernoulli
+    mask per (batch element, slot). Masked slots skip injection — the
+    residual at those placeholder positions keeps its natural pre-injection
+    content. We always force at least 1 slot per row to remain. Use 0.0
+    for eval.
+    """
     assert len(source_activations) == len(positions)
     B = len(source_activations)
     if B == 0:
@@ -60,8 +67,34 @@ def get_multi_token_steering_hook(
         # Project in fp32 to match the trainable modules' dtype.
         proj_BKD = projector(source_BD)  # (B, K, d_model), fp32
 
+        # Sample per-(batch, slot) keep mask once per call.
+        K = proj_BKD.shape[1]
+        if slot_dropout_p > 0.0:
+            keep = torch.bernoulli(
+                torch.full((B, K), 1.0 - slot_dropout_p, device=device)
+            ).bool()
+            # Force at least one slot per row to remain (avoid all-dropped rows).
+            no_keep = ~keep.any(dim=1)
+            if no_keep.any():
+                rand_slot = torch.randint(0, K, (B,), device=device)
+                for b in range(B):
+                    if no_keep[b]:
+                        keep[b, int(rand_slot[b].item())] = True
+        else:
+            keep = None  # all slots active
+
         for b in range(B):
-            pos_b = torch.tensor(positions[b], dtype=torch.long, device=device)
+            pos_b_full = positions[b]
+            if keep is not None:
+                kept_idx = [k for k in range(K) if bool(keep[b, k].item())]
+                if not kept_idx:
+                    continue
+            else:
+                kept_idx = list(range(K))
+
+            pos_b = torch.tensor(
+                [pos_b_full[k] for k in kept_idx], dtype=torch.long, device=device
+            )
             assert pos_b.min() >= 0
             assert pos_b.max() < L
 
@@ -69,7 +102,8 @@ def get_multi_token_steering_hook(
             # Detached norms in fp32 so the W gradient is purely directional.
             norms_K1 = orig_KD.float().norm(dim=-1, keepdim=True).detach()
 
-            normed_KD = F.normalize(proj_BKD[b], dim=-1)  # fp32
+            kept_proj = proj_BKD[b, kept_idx, :]  # (n_kept, d)
+            normed_KD = F.normalize(kept_proj, dim=-1)  # fp32
             steered_KD = normed_KD * norms_K1 * steering_coefficient  # fp32
 
             # Add to the original residual in fp32, cast back to model dtype.
