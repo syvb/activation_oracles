@@ -18,7 +18,19 @@ Tried to provision an H100 spot in us-central1-a but the project has 0 quota for
 
 Per user instruction, paused all further work until the quota request is decided.
 
-## Next steps once quota is granted
+## Final outcome (2026-05-09 evening)
+
+Switched to RunPod (H100 80GB Spot, ~$2.99/hr); ran Phase 0 → Phase 2 main → Phase 2 LoRA fallback → K=1 LoRA control → step-0 K-sweep with several init strategies → broader 20-dataset eval → W-only training with all_identity init. See `RESULTS.md` for the full per-phase numbers.
+
+Headline finding (different from the plan's hypothesis):
+- The plan asked whether a *learned* linear projection W: R^d → R^(K×d) would let multi-token decomposition help. **It does not** — every variant of training (small adapter, LoRA fallback, W-only at low LR) either matches K=1 or hurts OOD generalization.
+- However, with **all_identity init and no training** (W_k = I for every slot at K=4 or K=8, frozen AO), there is a modest free OOD gain on the paper's classification eval: +3.8–4.6 pp on the standard OOD-3 set, +1.6 pp on the broader OOD-13. IID is unchanged.
+- The optimum is brittle: adding std-0.02 noise to the identity init or training W with LR 3e-5 both destroy the gain in 500 steps.
+- Mechanistically this looks like K-fold redundancy at the AO input acting as a soft OOD regularizer, not the plan's hypothesized "selective attention to distinct projections."
+
+GPU teardown / final commit pending user direction.
+
+## Next steps once quota is granted (no longer needed — used RunPod instead)
 1. Provision `a3-highgpu-1g` spot in `us-central1-a` (image family `pytorch-2-9-cu129-ubuntu-2204-nvidia-580`, 200 GB pd-balanced boot disk).
 2. SSH in, clone the repo, `uv sync`, `huggingface-cli login`.
 3. Phase 0: Run `experiments/classification_eval.py` restricted to Qwen/Qwen3-8B + `checkpoints_cls_only_addition_Qwen3-8B` at layer 50% in single-token mode. Confirm accuracy is in the ballpark of the paper.

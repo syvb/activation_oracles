@@ -231,7 +231,52 @@ The AO was trained to handle multi-token sequences where each placeholder gets a
 
 This isn't quite the mechanism the plan hypothesized (selective attention to *different* projections of one activation). It's closer to "K-fold redundancy at the input is a free OOD regularizer for the AO."
 
-(Validating this on the broader 20-dataset eval set next.)
+### Validation on the broader 20-dataset Phase 0 eval
+
+`experiments/phase0_with_kdecomp.py --n-test-per-ds 250`. Same datasets as Phase 0 (8 IID-mixture, 12 OOD), 500 examples per dataset. K=1 baseline (`identity_plus_noise`) vs K ∈ {4, 8, 16} `all_identity`, all step 0 (no training).
+
+| K  | IID(7)  | OOD-3 (paper grouping) | OOD-engels(10)  | OOD-all(13)     |
+| -- | ------: | ---------------------: | --------------: | --------------: |
+| 1  | 88.8%   | 67.7%                  | 64.6%           | 65.3%           |
+| 4  | **89.0%**   | 71.5%                  | **65.5%**       | **66.9%**       |
+| 8  | 88.5%   | **72.3%**              | 65.1%           | 66.8%           |
+| 16 | 87.1%   | 71.5%                  | 64.5%           | 66.1%           |
+
+The OOD gain is real but smaller on the broader eval than on the 2-dataset OOD slice:
+- **OOD-3 (ag_news, language_id, singular_plural — the paper's standard OOD)**: K=4 gets +3.8pp, K=8 gets +4.6pp.
+- **OOD-engels (10 wikidata-style binary classifiers)**: K=4 gets +0.9pp, K=8 +0.5pp — within noise.
+- **OOD-all (13 datasets)**: K=4 gets +1.6pp, K=8 +1.5pp — modest.
+
+Per-dataset: the gain is concentrated in a few OOD datasets (notably `singular_plural`: +9.2pp at K=4, +11.6pp at K=8) and absent or negative on others (e.g., `engels_hist_fig_ismale`: −5.6pp at K=4, −6.2pp at K=8). It's not a uniform OOD lift; it's a soft bias that helps some target tasks and hurts others, with the average tilting positive.
+
+K=4 looks like a stable sweet spot: matches K=1 on IID (89.0 vs 88.8), positive on every OOD aggregate.
+
+### Can W be trained to improve on the all_identity step-0 state?
+
+Last experiment: K=4 all_identity init, AO LoRA frozen, no adapter, train **W only** at LR 3e-5 to see if the projector can refine the K identical copies into K useful different projections.
+
+| Step | IID    | OOD    | Avg    |
+| ---: | -----: | -----: | -----: |
+|    0 | 86.5%  | 72.7%  | 83.7%  |
+|  500 | 82.9%  | 60.2%  | 78.4%  |
+
+OOD collapsed by 12.5pp after just 500 steps. Killed the run after step 500 — the trajectory mirrors what happens to the gain when you add std-0.02 noise to the init. The all_identity step-0 state is a brittle optimum: any movement of W away from identity destroys it.
+
+**The W-projection-and-train hypothesis from the plan does not survive contact with the data.** What does work is using K identical copies of the activation at step 0, with the projector held fixed at identity.
+
+### Final summary table
+
+Best K=8 + 3pp threshold from PLAN.md: K=8 needs to beat K=1 by 3pp on the held-out classification eval.
+
+| Setup                             | IID   | OOD-3 | OOD-all(13) |
+| --------------------------------- | ----: | ----: | ----------: |
+| K=1 baseline (paper-style)        | 88.8% | 67.7% | 65.3%       |
+| K=4 all_identity, no training     | 89.0% | 71.5% | 66.9%       |
+| K=8 all_identity, no training     | 88.5% | 72.3% | 66.8%       |
+| K=8 + W + adapter trained         | 86.1% | —     | (47.0% on 2-OOD) |
+| K=8 + LoRA + W trained            | 90.1% | —     | (58.6% on 2-OOD) |
+
+**Bottom line:** the multi-token decomposition gives a real but modest free OOD gain (+1.6 pp avg, +4 pp on the standard OOD-3, +9 pp on `singular_plural`) when used in eval-only mode with all_identity init. The plan's *learned* W projection does not improve on this — both training W and training the LoRA destroy the gain. The mechanism is closer to "K-fold input redundancy as soft regularization" than to the hypothesized "selective attention to distinct projections of one activation."
 
 ## Phase 3 — K sweep
 
