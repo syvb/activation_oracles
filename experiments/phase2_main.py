@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--run-name", type=str, default="phase2_k8_main")
     ap.add_argument("--eval-every", type=int, default=200)
     ap.add_argument("--log-every", type=int, default=10)
+    ap.add_argument("--init-strategy", type=str, default="identity_plus_noise")
     args = ap.parse_args()
 
     train_dps: list[ClassificationDatapoint] = []
@@ -93,6 +94,7 @@ def main():
         steering_coefficient=args.steering_coefficient,
         eval_every=args.eval_every,
         log_every=args.log_every,
+        projector_init_strategy=args.init_strategy,
     )
     act_layer = layer_percent_to_layer(cfg.model_name, cfg.layer_percent)
     print(f"Activation layer: {act_layer}")
