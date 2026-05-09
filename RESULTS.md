@@ -89,9 +89,45 @@ OOD has clear headroom (~35pp away from the 100% ceiling), which is exactly wher
 3. Same identity-plus-noise init.
 4. Eval at step 0 + every 500 steps so we can read off the curve.
 
-## Phase 2 — Main run (K=8, 30K+ examples)
+## Phase 2 — Main run (K=8, 32K examples, LR 1e-4)
 
-(pending)
+`experiments/phase2_main.py --k 8 --n-train-per-ds 2000 --n-test-per-ds 250 --batch-size 8 --epochs 1 --lr 1e-4 --eval-every 500 --run-name phase2_k8_lr1e4`
+
+- Train: 8 datasets × 2000 contexts × 2 QAs = **32K** train examples
+- Test: 8 IID + 2 OOD datasets × 250 contexts × 2 QAs = 5K eval examples
+- 4000 optim steps at bs=8, **LR 1e-4** (tighter than the plan's 3e-4 because Phase 1 showed instability)
+- Same identity-plus-noise init, full 67M-param residual MLP adapter
+
+| Step | Avg | IID | OOD |
+| ----:|----:|----:|----:|
+|    0 | 76.3% | **81.8%** | **54.5%** |
+|  500 | 63.2% | 66.7% | 49.0% |
+| 1000 | 68.9% | 73.8% | 49.2% |
+| 1500 | 72.5% | 78.8% | 47.3% |
+| 2000 | 74.3% | 80.8% | 48.3% |
+| 2500 | 74.4% | 80.7% | 49.0% |
+| 3000 | 74.7% | 81.6% | 46.8% |
+| 3500 | 77.1% | 84.6% | 47.3% |
+| 4000 | **78.3%** | **86.1%** | **47.0%** |
+
+**vs K=1 baseline: IID 90.3%, OOD 64.6%.**
+
+| Metric | K=1 baseline | K=8 step 0 | K=8 step 4000 | Δ vs baseline |
+| ------ | -----------: | ---------: | ------------: | ------------: |
+| IID    |        90.3% |      81.8% |    **86.1%** |      **−4.2pp** |
+| OOD    |        64.6% |      54.5% |    **47.0%** |    **−17.6pp** |
+
+**Verdict — Phase 2 fails the plan's bar.** Plan threshold for "positive" was K=1 + 3pp on the held-out classification eval. Final K=8 IID is 4.2pp *below* baseline and OOD is 17.6pp below.
+
+Trajectory shape:
+- The K=8 *starting point* (W₁=I, noise) already costs ~9pp IID / ~10pp OOD vs K=1 — the AO is meaningfully disturbed by 7 noise placeholder slots even before any optimization.
+- Training causes an immediate drop on IID (step 0 → step 500: 81.8% → 66.7%) followed by slow recovery, ending only just above the starting point on IID and *worse* on OOD.
+- OOD never recovers and gradually drops further. Training is ovrefitting to the IID slice (the 8 datasets it has training data for) and breaking generalization.
+
+Most likely failure mode is the one PLAN.md predicted explicitly:
+> the most likely failure mode is W collapsing to put all signal in slot 1, leaving the other K-1 slots emitting noise that the AO can't quite ignore.
+
+Next: PLAN.md's "LoRA fallback" — drop the small adapter, let the AO LoRA itself continue training along with W, giving the AO maximum freedom to adapt to the K-token format.
 
 ## Phase 3 — K sweep
 
