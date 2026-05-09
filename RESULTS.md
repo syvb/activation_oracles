@@ -129,6 +129,45 @@ Most likely failure mode is the one PLAN.md predicted explicitly:
 
 Next: PLAN.md's "LoRA fallback" — drop the small adapter, let the AO LoRA itself continue training along with W, giving the AO maximum freedom to adapt to the K-token format.
 
+## Phase 2 LoRA fallback (K=8, 32K examples, AO LoRA + W trainable, no adapter)
+
+`experiments/phase2_lora_fallback.py --k 8 --n-train-per-ds 2000 --n-test-per-ds 250 --batch-size 8 --epochs 1 --lr 1e-4 --ao-lora-lr 1e-5 --no-adapter --eval-every 500 --run-name phase2_lora_fallback`
+
+Same data and step count as the adapter run. AO LoRA trained at LR 1e-5 alongside the W projection at LR 1e-4. No injection-layer MLP adapter.
+
+| Step | Avg | IID | OOD |
+| ----:|----:|----:|----:|
+|    0 | 76.2% | 81.6% | 54.5% |
+|  500 | 75.6% | 80.0% | 57.9% |
+| 1000 | 79.1% | 83.8% | **60.3%** |
+| 1500 | 78.7% | 85.9% | 50.2% |
+| 2000 | 81.2% | 87.4% | 56.4% |
+| 2500 | 82.6% | 88.5% | 58.8% |
+| 3000 | 82.9% | 89.4% | 56.6% |
+| 3500 | 83.8% | 90.1% | 58.7% |
+| 4000 | **83.8%** | **90.1%** | **58.6%** |
+
+| Metric | K=1 baseline | K=8 step 0 | K=8 LoRA-fb final | Δ vs baseline |
+| ------ | -----------: | ---------: | ----------------: | ------------: |
+| IID    |        90.3% |      81.6% |             90.1% |   **−0.2pp** (~match) |
+| OOD    |        64.6% |      54.5% |             58.6% |     **−6.0pp** |
+
+Compared to the frozen-LoRA + adapter run (Phase 2):
+- IID: +4pp (90.1 vs 86.1)
+- OOD: +12pp (58.6 vs 47.0)
+
+Big improvement vs the adapter approach — the AO clearly *can* adapt to multi-token decompositions when its LoRA isn't held frozen, and the catastrophic OOD collapse seen with the adapter goes away.
+
+**But on the plan's threshold (K=1 baseline + 3pp), this is still "marginal":**
+- IID just matches baseline, doesn't beat it.
+- OOD is 6pp below baseline.
+
+Per the plan's decision rule, this is the "marginal or absent" branch — the linear-W decomposition with LoRA fallback does not beat K=1 by the required margin. Two possible interpretations:
+1. The IID win comes from the LoRA training, not the W projection (a K=1 LoRA control would give the same numbers).
+2. The OOD loss is a generalization cost of fine-tuning on the 8-task IID slice, also independent of K.
+
+Running a K=1 LoRA-fallback control to disentangle.
+
 ## Phase 3 — K sweep
 
 (pending — conditional on Phase 2 success)
