@@ -32,10 +32,12 @@ def get_multi_token_steering_hook(
         raise ValueError("Empty batch")
 
     # Stack source activations to a (B, d_model) tensor on the right device.
-    # The source activations come from a frozen target-model forward pass and do
-    # not require gradients themselves.
+    # The source activations come from a frozen target-model forward pass and
+    # do not require gradients themselves. We force fp32 here because the
+    # projector and adapter are kept in fp32 for stable AdamW updates.
     source_BD = torch.stack(
-        [a.to(device=device).detach() for a in source_activations], dim=0
+        [a.to(device=device, dtype=torch.float32).detach() for a in source_activations],
+        dim=0,
     )
 
     def hook_fn(module, _input, output):
@@ -53,9 +55,10 @@ def get_multi_token_steering_hook(
         if L <= 1:
             return (resid_BLD, *rest) if output_is_tuple else resid_BLD
 
-        # Project: (B, K, d_model). Cast source to whatever dtype the residual
-        # stream is in (bf16 in our setup) so the matmul matches.
-        proj_BKD = projector(source_BD.to(resid_BLD.dtype))
+        target_dtype = resid_BLD.dtype  # typically bf16
+
+        # Project in fp32 to match the trainable modules' dtype.
+        proj_BKD = projector(source_BD)  # (B, K, d_model), fp32
 
         for b in range(B):
             pos_b = torch.tensor(positions[b], dtype=torch.long, device=device)
@@ -63,17 +66,19 @@ def get_multi_token_steering_hook(
             assert pos_b.max() < L
 
             orig_KD = resid_BLD[b, pos_b, :]
-            norms_K1 = orig_KD.norm(dim=-1, keepdim=True).detach()
+            # Detached norms in fp32 so the W gradient is purely directional.
+            norms_K1 = orig_KD.float().norm(dim=-1, keepdim=True).detach()
 
-            normed_KD = F.normalize(proj_BKD[b], dim=-1)
-            steered_KD = (normed_KD * norms_K1 * steering_coefficient).to(resid_BLD.dtype)
+            normed_KD = F.normalize(proj_BKD[b], dim=-1)  # fp32
+            steered_KD = normed_KD * norms_K1 * steering_coefficient  # fp32
 
-            post = steered_KD + orig_KD
+            # Add to the original residual in fp32, cast back to model dtype.
+            post = (steered_KD + orig_KD.float())
 
             if adapter is not None:
-                post = adapter(post)
+                post = adapter(post)  # fp32 -> fp32
 
-            resid_BLD[b, pos_b, :] = post
+            resid_BLD[b, pos_b, :] = post.to(target_dtype)
 
         return (resid_BLD, *rest) if output_is_tuple else resid_BLD
 
