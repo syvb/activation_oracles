@@ -624,6 +624,75 @@ For this experiment series specifically: stop chasing "use all 8 slots"
 within the single-source format. The format itself is the bottleneck;
 the regularizers are not.
 
+## Phase 8 — Tuned-K4 (K=4, higher LRs, steering coefficient 0.5)
+
+After noticing that the K=8 trained-W only used 3 of 8 slots, I tried
+K=4 with several HP changes that I expected to be net-positive:
+- K=4 (instead of K=8): match the eval-only sweet spot, halve W params
+- LR LoRA: 3e-5 (was 1e-5)
+- LR projector: 1e-3 (was 3e-4)
+- Steering coefficient: 0.5 (was 1.0) — half the residual perturbation
+- 1 epoch (originally tried 3 epochs but loss leveled off in epoch 1, killed early)
+
+Pushed to `syvb/from-scratch-K4-tuned-AO-Qwen3-8B`.
+First run with wandb online: https://wandb.ai/octahedral-systems/sae_introspection/runs/wb97iyv0
+
+### Eval results
+
+| Eval                      | K=1 baseline | K=8 trained-W | K=8 frozen-W | **K=4 tuned** |
+| ------------------------- | -----------: | ------------: | -----------: | ------------: |
+| Classification IID(7)     |        89.1% |         90.6% |        89.1% |         90.4% |
+| Classification OOD-3      |        66.0% |     **88.7%** |        83.1% |         78.8% |
+| Classification OOD-all(13)|        65.0% |     **70.2%** |        69.8% |         65.9% |
+| Taboo(20 avg)             |         4.9% |          5.8% |     **7.2%** |          7.1% |
+| PersonaQA (overall)       |         8.8% |          6.5% |     **7.5%** |          5.5% |
+| **3-eval AVG**            |        29.1% |         29.9% |    **30.4%** |         29.0% |
+
+The combined HP changes hurt by ~1.4pp vs the best K=8 variant (frozen-W).
+Classification IID stayed flat (90.4% vs 90.6%) but OOD-3 lost ~10pp,
+and PersonaQA dropped by ~2pp.
+
+### Diagnosis
+
+The most likely culprit is **steering coefficient 0.5**. The hook adds
+`norm-matched(W·source) + orig` at placeholder positions. With
+coefficient 0.5, the injected signal is half as strong relative to the
+residual stream's natural content. Combined with K=4 instead of K=8,
+the *total* injected signal magnitude is roughly 0.5 × (4/8) = 0.25× the
+K=8 trained-W setup.
+
+PersonaQA suffers most because that task requires reconstructing a
+persona attribute from a single source — it benefits from maximum info
+per injection. The classification tasks need less per-example info and
+held up better.
+
+### What this teaches
+
+Conflating three HP changes (K, LRs, steering coefficient) into one run
+made it impossible to attribute the regression. The clean ablations
+would be:
+1. K=4 alone (steering=1.0, original LRs) — does halving K hurt?
+2. Steering coefficient 0.5 alone (K=8, original LRs) — does halving
+   the injection hurt?
+3. Higher LRs alone (K=8, steering=1.0) — does the AO undertrain at
+   1e-5/3e-4?
+
+My HP recommendation got the steering coefficient direction wrong: with
+K halved, you probably want MORE steering signal, not less, to keep total
+injected magnitude roughly constant. A revised follow-up would try
+`K=4, steer=2.0` (preserves total signal at 2.0×(4/8)=1.0× the K=8/steer=1.0
+baseline).
+
+### Trained checkpoints (full set)
+
+| Run                | HF Hub repo (private)                                         |
+| ------------------ | ------------------------------------------------------------- |
+| trained-W K=8      | `syvb/from-scratch-K8-AO-Qwen3-8B`                            |
+| frozen-W K=8       | `syvb/from-scratch-K8-frozen-W-AO-Qwen3-8B`                   |
+| entropy-pen K=8    | `syvb/from-scratch-K8-entropy-penalty-AO-Qwen3-8B`            |
+| slot-dropout K=8   | `syvb/from-scratch-K8-slot-dropout-AO-Qwen3-8B`               |
+| tuned K=4          | `syvb/from-scratch-K4-tuned-AO-Qwen3-8B`                      |
+
 ## Trained checkpoint
 
 - Repo: `syvb/from-scratch-K8-AO-Qwen3-8B` (HF Hub, private)

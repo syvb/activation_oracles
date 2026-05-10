@@ -26,9 +26,19 @@ OOD_ENGELS = [
 OOD_ALL_13 = OOD_PAPER_3 + OOD_ENGELS
 
 
+def _resolve(pattern: Path) -> Path | None:
+    """Resolve a glob pattern (parent / 'name_K*.json') to a single concrete path."""
+    parent = pattern.parent
+    matches = list(parent.glob(pattern.name))
+    return matches[0] if matches else None
+
+
 def score_classification(path: Path) -> dict[str, float]:
     """Returns {dataset_id: accuracy}."""
-    with open(path) as f:
+    resolved = _resolve(path)
+    if resolved is None:
+        return {}
+    with open(resolved) as f:
         d = json.load(f)
     by_ds: dict[str, list[bool]] = defaultdict(list)
     for r in d["records"]:
@@ -41,7 +51,10 @@ def score_classification(path: Path) -> dict[str, float]:
 def score_taboo(path: Path) -> dict[str, float]:
     """Returns {target_word: accuracy} where accuracy = fraction of responses
     that contain the target word substring (case-insensitive)."""
-    with open(path) as f:
+    resolved = _resolve(path)
+    if resolved is None:
+        return {}
+    with open(resolved) as f:
         d = json.load(f)
     by_target: dict[str, list[bool]] = defaultdict(list)
     for r in d["records"]:
@@ -54,7 +67,10 @@ def score_taboo(path: Path) -> dict[str, float]:
 def score_personaqa(path: Path) -> dict[str, float]:
     """Returns {prompt_kind: accuracy}. Each prompt asks about a persona attribute;
     accuracy = fraction of responses that contain the ground-truth value."""
-    with open(path) as f:
+    resolved = _resolve(path)
+    if resolved is None:
+        return {}
+    with open(resolved) as f:
         d = json.load(f)
     by_prompt: dict[str, list[bool]] = defaultdict(list)
     overall: list[bool] = []
@@ -88,12 +104,8 @@ def main():
     # --- Classification ---
     print("CLASSIFICATION (250 examples × 2 QAs per dataset)")
     print("-" * 72)
-    k8_cls = score_classification(k8 / "classification_K8.json")
-    base_cls_path = base / "classification_K1.json"
-    if not base_cls_path.exists():
-        # fall back to the K8 file naming if user labelled differently
-        base_cls_path = base / "classification_K8.json"
-    base_cls = score_classification(base_cls_path) if base_cls_path.exists() else {}
+    k8_cls = score_classification(k8 / "classification_K*.json")
+    base_cls = score_classification(base / "classification_K*.json")
 
     def avg(d: dict[str, float], group: list[str]) -> float:
         accs = [d[k] for k in group if k in d]
@@ -116,11 +128,8 @@ def main():
     print()
     print("TABOO (20 target words, 3 prompts × ~30 contexts × 5 generations each)")
     print("-" * 72)
-    k8_tab = score_taboo(k8 / "taboo_K8.json")
-    base_tab_path = base / "taboo_K1.json"
-    if not base_tab_path.exists():
-        base_tab_path = base / "taboo_K8.json"
-    base_tab = score_taboo(base_tab_path) if base_tab_path.exists() else {}
+    k8_tab = score_taboo(k8 / "taboo_K*.json")
+    base_tab = score_taboo(base / "taboo_K*.json")
 
     print(f"{'Target word':<20} {args.label_base:>15} {args.label_k8:>15} {'Δ':>10}")
     targets = sorted(set(list(k8_tab.keys()) + list(base_tab.keys())))
@@ -136,11 +145,8 @@ def main():
     print()
     print("PERSONAQA (50 personas × 6 attribute questions × 5 generations each)")
     print("-" * 72)
-    k8_paq = score_personaqa(k8 / "personaqa_K8.json")
-    base_paq_path = base / "personaqa_K1.json"
-    if not base_paq_path.exists():
-        base_paq_path = base / "personaqa_K8.json"
-    base_paq = score_personaqa(base_paq_path) if base_paq_path.exists() else {}
+    k8_paq = score_personaqa(k8 / "personaqa_K*.json")
+    base_paq = score_personaqa(base / "personaqa_K*.json")
 
     print(f"{'Question':<60} {args.label_base:>15} {args.label_k8:>15} {'Δ':>10}")
     for prompt in sorted(set(list(k8_paq.keys()) + list(base_paq.keys()))):
