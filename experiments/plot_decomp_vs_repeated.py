@@ -111,10 +111,10 @@ def main() -> None:
     learned_color = "#2E86C1"    # blue
 
     ax.barh(y + height/2, deltas_frozen, height,
-            label='"trained with repeated inputs"  (frozen W = I, K=8)',
+            label="Trained with repeated inputs  (frozen W = I, K=8)",
             color=repeated_color, edgecolor="black", linewidth=0.6, zorder=3)
     ax.barh(y - height/2, deltas_trained, height,
-            label='"trained with learned decomposition"  (trained W, K=8)',
+            label="Trained with learned decomposition  (trained W, K=8)",
             color=learned_color, edgecolor="black", linewidth=0.6, zorder=3)
 
     # Zero line = K=1 baseline
